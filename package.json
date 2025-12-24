@@ -1,0 +1,37 @@
+{
+  "name": "godot-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for integrating Godot game engine with Copilot chat",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "godot-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": [
+    "mcp",
+    "godot",
+    "copilot",
+    "ai",
+    "game-development"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
