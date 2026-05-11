@@ -163,6 +163,10 @@ export const removeNodeTool: ToolHandler = {
       throw new Error("Godot is not available");
     }
 
+    if (!(await isGodotProject(projectPath))) {
+      throw new Error(`Not a valid Godot project: ${projectPath}`);
+    }
+
     const result = await executor.execute(projectPath, "remove_node", {
       scene_path: scenePath,
       node_path: nodePath,
@@ -215,6 +219,10 @@ export const modifyNodeTool: ToolHandler = {
       throw new Error("Godot is not available");
     }
 
+    if (!(await isGodotProject(projectPath))) {
+      throw new Error(`Not a valid Godot project: ${projectPath}`);
+    }
+
     const result = await executor.execute(projectPath, "modify_node", {
       scene_path: scenePath,
       node_path: nodePath,
@@ -257,6 +265,10 @@ export const readSceneTool: ToolHandler = {
       throw new Error("Godot is not available");
     }
 
+    if (!(await isGodotProject(projectPath))) {
+      throw new Error(`Not a valid Godot project: ${projectPath}`);
+    }
+
     const result = await executor.execute(projectPath, "read_scene", {
       scene_path: scenePath,
     });
@@ -295,6 +307,10 @@ export const listNodesTool: ToolHandler = {
 
     if (!executor) {
       throw new Error("Godot is not available");
+    }
+
+    if (!(await isGodotProject(projectPath))) {
+      throw new Error(`Not a valid Godot project: ${projectPath}`);
     }
 
     const result = await executor.execute(projectPath, "list_nodes", {

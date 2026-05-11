@@ -8,8 +8,76 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { getAllTools, executeTool } from "./tools/index.js";
+import type { ToolDefinition } from "./tools/index.js";
 import { GodotExecutor } from "./godot/executor.js";
 import { findGodotPath } from "./godot/finder.js";
+
+type JsonSchemaNode = {
+  type?: string;
+  enum?: unknown[];
+  properties?: Record<string, JsonSchemaNode>;
+  required?: string[];
+  items?: JsonSchemaNode;
+  additionalProperties?: boolean;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateSchemaValue(schema: JsonSchemaNode, value: unknown, path: string): string[] {
+  const errors: string[] = [];
+
+  if (schema.enum && !schema.enum.includes(value)) {
+    errors.push(`${path} must be one of: ${schema.enum.join(", ")}`);
+    return errors;
+  }
+
+  if (schema.type) {
+    const valid =
+      (schema.type === "string" && typeof value === "string") ||
+      (schema.type === "number" && typeof value === "number" && Number.isFinite(value)) ||
+      (schema.type === "boolean" && typeof value === "boolean") ||
+      (schema.type === "object" && isRecord(value)) ||
+      (schema.type === "array" && Array.isArray(value));
+
+    if (!valid) {
+      errors.push(`${path} must be ${schema.type}`);
+      return errors;
+    }
+  }
+
+  if (schema.properties && isRecord(value)) {
+    for (const requiredKey of schema.required ?? []) {
+      if (value[requiredKey] === undefined || value[requiredKey] === null) {
+        errors.push(`${path}.${requiredKey} is required`);
+      }
+    }
+
+    for (const [key, childSchema] of Object.entries(schema.properties)) {
+      if (value[key] !== undefined && value[key] !== null) {
+        errors.push(...validateSchemaValue(childSchema, value[key], `${path}.${key}`));
+      }
+    }
+  }
+
+  if (schema.items && Array.isArray(value)) {
+    value.forEach((item, index) => {
+      errors.push(...validateSchemaValue(schema.items as JsonSchemaNode, item, `${path}[${index}]`));
+    });
+  }
+
+  return errors;
+}
+
+function validateToolArguments(tool: ToolDefinition | undefined, args: unknown): string[] {
+  if (!tool) {
+    return [];
+  }
+
+  const schema = tool.inputSchema as JsonSchemaNode;
+  return validateSchemaValue(schema, args, "arguments");
+}
 
 // Initialize Godot executor
 let godotExecutor: GodotExecutor | null = null;
@@ -55,23 +123,19 @@ function setupHandlers(): void {
     const { name, arguments: args } = request.params;
     const toolArgs = args ?? {};
 
-    // Validate required parameters
+    // Validate parameters before handlers cast them to concrete types.
     const tool = toolMap.get(name);
-    if (tool?.inputSchema.required) {
-      const missing = tool.inputSchema.required.filter(
-        (param) => toolArgs[param] === undefined || toolArgs[param] === null
-      );
-      if (missing.length > 0) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: Missing required parameter(s): ${missing.join(", ")}`,
-            },
-          ],
-          isError: true,
-        };
-      }
+    const validationErrors = validateToolArguments(tool, toolArgs);
+    if (validationErrors.length > 0) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: Invalid parameter(s): ${validationErrors.join("; ")}`,
+          },
+        ],
+        isError: true,
+      };
     }
 
     try {

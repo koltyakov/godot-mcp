@@ -4,6 +4,26 @@ import { isGodotProject } from "../godot/finder.js";
 import * as fs from "fs/promises";
 import * as path from "path";
 
+function resolveProjectFilePath(projectPath: string, resourcePath: string): string {
+  const relativePath = resourcePath.startsWith("res://")
+    ? resourcePath.slice("res://".length)
+    : resourcePath;
+
+  if (!relativePath || path.isAbsolute(relativePath)) {
+    throw new Error(`Path must be relative to the project or use res://: ${resourcePath}`);
+  }
+
+  const projectRoot = path.resolve(projectPath);
+  const targetPath = path.resolve(projectRoot, relativePath);
+  const isInsideProject = targetPath === projectRoot || targetPath.startsWith(projectRoot + path.sep);
+
+  if (!isInsideProject) {
+    throw new Error(`Path escapes project directory: ${resourcePath}`);
+  }
+
+  return targetPath;
+}
+
 // Create Script Tool
 export const createScriptTool: ToolHandler = {
   definition: {
@@ -114,6 +134,10 @@ export const attachScriptTool: ToolHandler = {
       throw new Error("Godot is not available");
     }
 
+    if (!(await isGodotProject(projectPath))) {
+      throw new Error(`Not a valid Godot project: ${projectPath}`);
+    }
+
     const result = await executor.execute(projectPath, "attach_script", {
       scene_path: scenePath,
       node_path: nodePath,
@@ -152,13 +176,11 @@ export const readScriptTool: ToolHandler = {
     const projectPath = args.project_path as string;
     const scriptPath = args.script_path as string;
 
-    // Convert res:// path to filesystem path
-    let fsPath: string;
-    if (scriptPath.startsWith("res://")) {
-      fsPath = path.join(projectPath, scriptPath.substring(6));
-    } else {
-      fsPath = path.join(projectPath, scriptPath);
+    if (!(await isGodotProject(projectPath))) {
+      throw new Error(`Not a valid Godot project: ${projectPath}`);
     }
+
+    const fsPath = resolveProjectFilePath(projectPath, scriptPath);
 
     try {
       const content = await fs.readFile(fsPath, "utf-8");
@@ -202,13 +224,11 @@ export const editScriptTool: ToolHandler = {
     const scriptPath = args.script_path as string;
     const content = args.content as string;
 
-    // Convert res:// path to filesystem path
-    let fsPath: string;
-    if (scriptPath.startsWith("res://")) {
-      fsPath = path.join(projectPath, scriptPath.substring(6));
-    } else {
-      fsPath = path.join(projectPath, scriptPath);
+    if (!(await isGodotProject(projectPath))) {
+      throw new Error(`Not a valid Godot project: ${projectPath}`);
     }
+
+    const fsPath = resolveProjectFilePath(projectPath, scriptPath);
 
     try {
       // Ensure directory exists
@@ -246,6 +266,10 @@ export const listScriptsTool: ToolHandler = {
 
     if (!executor) {
       throw new Error("Godot is not available");
+    }
+
+    if (!(await isGodotProject(projectPath))) {
+      throw new Error(`Not a valid Godot project: ${projectPath}`);
     }
 
     const result = await executor.execute(projectPath, "list_scripts", {});

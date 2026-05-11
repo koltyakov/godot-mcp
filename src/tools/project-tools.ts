@@ -4,6 +4,10 @@ import { isGodotProject, findSceneFiles, findScriptFiles } from "../godot/finder
 import * as fs from "fs/promises";
 import * as path from "path";
 
+function formatConfigString(value: string): string {
+  return JSON.stringify(value);
+}
+
 // Get Project Info Tool
 export const getProjectInfoTool: ToolHandler = {
   definition: {
@@ -123,6 +127,10 @@ export const launchEditorTool: ToolHandler = {
     }
 
     const result = await executor.launchEditor(projectPath);
+    if (!result.success) {
+      throw new Error(result.error || "Failed to launch Godot editor");
+    }
+
     return result.output;
   },
 };
@@ -155,6 +163,10 @@ export const runProjectTool: ToolHandler = {
     }
 
     const result = await executor.runProject(projectPath);
+    if (!result.success) {
+      throw new Error(result.error || "Failed to run Godot project");
+    }
+
     return result.output;
   },
 };
@@ -273,6 +285,10 @@ export const initProjectTool: ToolHandler = {
     const projectName = args.project_name as string;
     const renderer = (args.renderer as string) || "forward_plus";
 
+    if (!["forward_plus", "mobile", "gl_compatibility"].includes(renderer)) {
+      throw new Error(`Invalid renderer: ${renderer}`);
+    }
+
     // Check if project already exists
     const projectFile = path.join(projectPath, "project.godot");
     try {
@@ -300,7 +316,7 @@ config_version=5
 
 [application]
 
-config/name="${projectName}"
+config/name=${formatConfigString(projectName)}
 config/features=PackedStringArray("4.3", "Forward Plus")
 
 [rendering]

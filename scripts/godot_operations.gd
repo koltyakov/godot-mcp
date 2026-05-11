@@ -146,8 +146,12 @@ func _add_node(params: Dictionary) -> Dictionary:
 	
 	# Set properties
 	for prop_name in properties:
-		if new_node.get(prop_name) != null or prop_name in new_node.get_property_list().map(func(p): return p.name):
-			new_node.set(prop_name, properties[prop_name])
+		if not _has_property(new_node, prop_name):
+			new_node.queue_free()
+			scene_root.queue_free()
+			return {"success": false, "error": "Property not found on new node: " + prop_name}
+
+		new_node.set(prop_name, _convert_property_value(properties[prop_name]))
 	
 	# Add to parent
 	parent_node.add_child(new_node)
@@ -155,7 +159,11 @@ func _add_node(params: Dictionary) -> Dictionary:
 	
 	# Save the scene
 	var new_packed_scene = PackedScene.new()
-	new_packed_scene.pack(scene_root)
+	var pack_result = new_packed_scene.pack(scene_root)
+	if pack_result != OK:
+		scene_root.queue_free()
+		return {"success": false, "error": "Failed to pack scene: " + str(pack_result)}
+
 	var result = ResourceSaver.save(new_packed_scene, scene_path)
 	scene_root.queue_free()
 	
@@ -195,7 +203,11 @@ func _remove_node(params: Dictionary) -> Dictionary:
 	node.queue_free()
 	
 	var new_packed_scene = PackedScene.new()
-	new_packed_scene.pack(scene_root)
+	var pack_result = new_packed_scene.pack(scene_root)
+	if pack_result != OK:
+		scene_root.queue_free()
+		return {"success": false, "error": "Failed to pack scene: " + str(pack_result)}
+
 	var result = ResourceSaver.save(new_packed_scene, scene_path)
 	scene_root.queue_free()
 	
@@ -226,6 +238,10 @@ func _modify_node(params: Dictionary) -> Dictionary:
 	
 	var modified_props = []
 	for prop_name in properties:
+		if not _has_property(node, prop_name):
+			scene_root.queue_free()
+			return {"success": false, "error": "Property not found on node: " + prop_name}
+
 		var value = properties[prop_name]
 		# Convert special types
 		value = _convert_property_value(value)
@@ -233,7 +249,11 @@ func _modify_node(params: Dictionary) -> Dictionary:
 		modified_props.append(prop_name)
 	
 	var new_packed_scene = PackedScene.new()
-	new_packed_scene.pack(scene_root)
+	var pack_result = new_packed_scene.pack(scene_root)
+	if pack_result != OK:
+		scene_root.queue_free()
+		return {"success": false, "error": "Failed to pack scene: " + str(pack_result)}
+
 	var result = ResourceSaver.save(new_packed_scene, scene_path)
 	scene_root.queue_free()
 	
@@ -352,7 +372,11 @@ func _attach_script(params: Dictionary) -> Dictionary:
 	node.set_script(script)
 	
 	var new_packed_scene = PackedScene.new()
-	new_packed_scene.pack(scene_root)
+	var pack_result = new_packed_scene.pack(scene_root)
+	if pack_result != OK:
+		scene_root.queue_free()
+		return {"success": false, "error": "Failed to pack scene: " + str(pack_result)}
+
 	var result = ResourceSaver.save(new_packed_scene, scene_path)
 	scene_root.queue_free()
 	
@@ -398,6 +422,7 @@ func _create_animation(params: Dictionary) -> Dictionary:
 	if anim_player == null:
 		anim_player = AnimationPlayer.new()
 		anim_player.name = "AnimationPlayer"
+		anim_player.root_node = NodePath("..")
 		target_node.add_child(anim_player)
 		anim_player.owner = scene_root
 	
@@ -414,10 +439,21 @@ func _create_animation(params: Dictionary) -> Dictionary:
 		library = AnimationLibrary.new()
 		anim_player.add_animation_library("", library)
 	
-	library.add_animation(animation_name, animation)
+	if library.has_animation(animation_name):
+		scene_root.queue_free()
+		return {"success": false, "error": "Animation already exists: " + animation_name}
+	
+	var add_result = library.add_animation(animation_name, animation)
+	if add_result != OK:
+		scene_root.queue_free()
+		return {"success": false, "error": "Failed to add animation: " + str(add_result)}
 	
 	var new_packed_scene = PackedScene.new()
-	new_packed_scene.pack(scene_root)
+	var pack_result = new_packed_scene.pack(scene_root)
+	if pack_result != OK:
+		scene_root.queue_free()
+		return {"success": false, "error": "Failed to pack scene: " + str(pack_result)}
+
 	var result = ResourceSaver.save(new_packed_scene, scene_path)
 	scene_root.queue_free()
 	
@@ -438,8 +474,11 @@ func _add_animation_track(params: Dictionary) -> Dictionary:
 	var property = params.get("property", "")
 	var keyframes = params.get("keyframes", [])
 	
-	if scene_path.is_empty() or animation_player_path.is_empty():
-		return {"success": false, "error": "scene_path and animation_player_path are required"}
+	if scene_path.is_empty() or animation_player_path.is_empty() or target_node_path.is_empty() or property.is_empty():
+		return {"success": false, "error": "scene_path, animation_player_path, target_node_path, and property are required"}
+	
+	if not (keyframes is Array) or keyframes.is_empty():
+		return {"success": false, "error": "At least one keyframe is required"}
 	
 	var packed_scene = load(scene_path) as PackedScene
 	if packed_scene == null:
@@ -457,19 +496,47 @@ func _add_animation_track(params: Dictionary) -> Dictionary:
 		scene_root.queue_free()
 		return {"success": false, "error": "Animation not found: " + animation_name}
 	
+	var animation_root = anim_player.get_node_or_null(anim_player.root_node)
+	if animation_root == null:
+		animation_root = anim_player.get_parent()
+	
+	if animation_root == null:
+		scene_root.queue_free()
+		return {"success": false, "error": "AnimationPlayer has no usable root node"}
+	
+	var target_node = animation_root if target_node_path == "." else animation_root.get_node_or_null(target_node_path)
+	if target_node == null:
+		scene_root.queue_free()
+		return {"success": false, "error": "Animation target node not found: " + target_node_path}
+	
+	if not _has_property(target_node, property):
+		scene_root.queue_free()
+		return {"success": false, "error": "Property not found on animation target: " + property}
+	
 	# Create the track
-	var track_path = target_node_path + ":" + property
+	var node_path = str(animation_root.get_path_to(target_node))
+	if node_path.is_empty():
+		node_path = "."
+	var track_path = node_path + ":" + property
 	var track_idx = animation.add_track(Animation.TYPE_VALUE)
 	animation.track_set_path(track_idx, track_path)
 	
 	# Add keyframes
 	for kf in keyframes:
+		if not (kf is Dictionary) or not kf.has("time") or not kf.has("value"):
+			scene_root.queue_free()
+			return {"success": false, "error": "Each keyframe must include time and value"}
+
 		var time = kf.get("time", 0.0)
 		var value = _convert_property_value(kf.get("value"))
 		animation.track_insert_key(track_idx, time, value)
 	
 	var new_packed_scene = PackedScene.new()
-	new_packed_scene.pack(scene_root)
+	var pack_result = new_packed_scene.pack(scene_root)
+	if pack_result != OK:
+		scene_root.queue_free()
+		return {"success": false, "error": "Failed to pack scene: " + str(pack_result)}
+
 	var result = ResourceSaver.save(new_packed_scene, scene_path)
 	scene_root.queue_free()
 	
@@ -498,6 +565,9 @@ func _create_resource(params: Dictionary) -> Dictionary:
 	
 	# Set properties
 	for prop_name in properties:
+		if not _has_property(resource, prop_name):
+			return {"success": false, "error": "Property not found on resource: " + prop_name}
+
 		var value = _convert_property_value(properties[prop_name])
 		resource.set(prop_name, value)
 	
@@ -602,7 +672,9 @@ func _create_node_of_type(type_name: String) -> Node:
 		_:
 			# Try to instantiate by class name
 			if ClassDB.class_exists(type_name):
-				return ClassDB.instantiate(type_name)
+				var instance = ClassDB.instantiate(type_name)
+				if instance is Node:
+					return instance
 			return null
 
 
@@ -714,11 +786,15 @@ func _process(delta: float) -> void:
 	return script
 
 
-func _serialize_node_tree(node: Node, depth: int = 0) -> Dictionary:
+func _serialize_node_tree(node: Node, root: Node = null, depth: int = 0) -> Dictionary:
+	if root == null:
+		root = node
+
+	var node_path = "." if node == root else str(root.get_path_to(node))
 	var data = {
 		"name": node.name,
 		"type": node.get_class(),
-		"path": str(node.get_path()),
+		"path": node_path,
 	}
 	
 	# Include script path if attached
@@ -728,12 +804,19 @@ func _serialize_node_tree(node: Node, depth: int = 0) -> Dictionary:
 	# Include children
 	var children = []
 	for child in node.get_children():
-		children.append(_serialize_node_tree(child, depth + 1))
+		children.append(_serialize_node_tree(child, root, depth + 1))
 	
 	if children.size() > 0:
 		data["children"] = children
 	
 	return data
+
+
+func _has_property(object: Object, property_name: String) -> bool:
+	for property_info in object.get_property_list():
+		if property_info.name == property_name:
+			return true
+	return false
 
 
 func _collect_node_paths(node: Node, root: Node, paths: Array) -> void:

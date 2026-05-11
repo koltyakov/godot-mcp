@@ -140,6 +140,10 @@ export const addAnimationTrackTool: ToolHandler = {
       throw new Error("Godot is not available");
     }
 
+    if (!(await isGodotProject(projectPath))) {
+      throw new Error(`Not a valid Godot project: ${projectPath}`);
+    }
+
     const result = await executor.execute(projectPath, "add_animation_track", {
       scene_path: scenePath,
       animation_player_path: animationPlayerPath,
