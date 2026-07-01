@@ -6,6 +6,10 @@ An MCP (Model Context Protocol) server that integrates Godot game engine with Co
 
 ## Features
 
+### MCP capabilities
+
+The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are annotated (read-only / destructive / open-world), mutation tools emit `resources/list_changed`, project content is exposed as `godot://` resources, and diagnostics are streamed over `notifications/message`. See the [MCP capabilities](#mcp-capabilities) section below for details.
+
 ### Scene Management
 
 - **create_scene** - Create new Godot scenes (.tscn) with specified root node types
@@ -43,6 +47,21 @@ An MCP (Model Context Protocol) server that integrates Godot game engine with Co
 Project-targeted tools accept `project_path`, but it is optional when Godot has an opened project. If exactly one open project is detected, the server uses it by default. If multiple projects are open, provide `project_name` or `project_path`; ambiguous requests report the available open projects so the client can ask which one to use.
 
 Most project content operations are executed by headless Godot through the bundled `godot_operations.gd` script, so scene/resource/script reads and writes use Godot's resource APIs instead of direct filesystem parsing where practical.
+
+### MCP capabilities
+
+The server advertises the standard MCP capabilities and uses them alongside the tool surface:
+
+- **`tools`** — every tool is annotated with `readOnlyHint`, `destructiveHint`, `idempotentHint`, or `openWorldHint` (per the MCP spec) so clients can show appropriate confirmation prompts and badges. Mutation tools emit `notifications/resources/list_changed` after a successful change.
+- **`resources`** (with `listChanged`) — read-only Godot content is exposed as resources under the `godot://` URI scheme:
+  - `godot://project` — active project metadata as JSON.
+  - `godot://scene/{path}` — serialized node tree of a scene; `{path}` is a percent-encoded `res://` path (e.g. `godot://scene/res%3A%2F%2Fscenes%2Fmain.tscn`). Listed automatically when a project is resolvable.
+  - `godot://script/{path}` — GDScript source; read directly from disk so it does not spawn a Godot process. Listed automatically.
+  Templates are exposed via `resources/templates/list` so clients can populate a resource picker.
+- **`prompts`** — workflow templates: `new-2d-player`, `new-3d-player`, `gdscript-conventions`, and `audit-scene`.
+- **`logging`** — diagnostic logs (headless spawn timing, parse warnings, non-zero exits) are streamed as `notifications/message`. Clients can change verbosity with `logging/setLevel`.
+
+The server also sends an `instructions` payload during initialization so clients can guide the model on resource usage and project selection.
 
 ## Prerequisites
 

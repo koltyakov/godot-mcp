@@ -1,4 +1,5 @@
 import type { ToolHandler } from "./types.js";
+import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { findOpenGodotProjects } from "../godot/finder.js";
 import * as fs from "fs/promises";
 import * as path from "path";
@@ -26,6 +27,7 @@ export const getProjectInfoTool: ToolHandler = {
       },
       required: [],
     },
+    annotations: readOnlyAnnotations,
   },
   async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
@@ -46,6 +48,7 @@ export const listScenesTool: ToolHandler = {
       },
       required: [],
     },
+    annotations: readOnlyAnnotations,
   },
   async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
@@ -66,6 +69,7 @@ export const launchEditorTool: ToolHandler = {
       },
       required: [],
     },
+    annotations: { openWorldHint: true },
   },
   async execute(args, executor) {
     if (!executor) {
@@ -95,6 +99,7 @@ export const runProjectTool: ToolHandler = {
       },
       required: [],
     },
+    annotations: { openWorldHint: true },
   },
   async execute(args, executor) {
     if (!executor) {
@@ -122,6 +127,7 @@ export const listOpenProjectsTool: ToolHandler = {
       properties: {},
       required: [],
     },
+    annotations: readOnlyAnnotations,
   },
   async execute(_args, _executor) {
     const projects = await findOpenGodotProjects();
@@ -143,6 +149,7 @@ export const getGodotVersionTool: ToolHandler = {
       properties: {},
       required: [],
     },
+    annotations: readOnlyAnnotations,
   },
   async execute(_args, executor) {
     if (!executor) {
@@ -184,6 +191,7 @@ export const createResourceTool: ToolHandler = {
       },
       required: ["resource_path", "resource_type"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {
@@ -238,6 +246,7 @@ export const runGodotScriptTool: ToolHandler = {
       },
       required: ["script"],
     },
+    annotations: { destructiveHint: true, openWorldHint: true },
   },
   async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
@@ -280,6 +289,7 @@ export const initProjectTool: ToolHandler = {
       },
       required: ["project_path", "project_name"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, _executor) {
     const projectPath = normalizeAbsoluteProjectPath(args.project_path as string);

@@ -5,12 +5,17 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  SetLevelRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { getAllTools, executeTool } from "./tools/index.js";
 import type { ToolDefinition } from "./tools/index.js";
 import { GodotExecutor } from "./godot/executor.js";
 import { findGodotPath } from "./godot/finder.js";
+import { setupResourceHandlers } from "./resources/index.js";
+import { setupPromptHandlers } from "./prompts/index.js";
+import { setServerLogger, setMinimumLogLevel, log } from "./logger.js";
+import { setResourceListChangedNotifier } from "./notifications.js";
 
 type JsonSchemaNode = {
   type?: string;
@@ -98,9 +103,44 @@ const server = new Server(
   {
     capabilities: {
       tools: {},
+      resources: { listChanged: true },
+      prompts: {},
+      logging: {},
     },
+    instructions: [
+      "godot-mcp exposes a Godot 4.x project to MCP clients via tools, resources, and prompts.",
+      "",
+      "Reading project contents:",
+      "- Prefer the godot:// resources (project info, scenes, scripts) over the read_* tools; resources are cheaper and stay in sync via resources/list_changed notifications.",
+      "- godot://scene/{path} and godot://script/{path} accept percent-encoded res:// paths.",
+      "",
+      "Writing to a project:",
+      "- Always pass res:// paths (or paths relative to the project root) to create_*/edit_* tools. Absolute paths are rejected.",
+      "- Mutation tools are annotated destructiveHint=true and emit resources/list_changed on success.",
+      "",
+      "Project selection:",
+      "- If a single Godot project is open in an editor process, it is used by default.",
+      "- Otherwise pass project_path (absolute) or project_name (matches an open project).",
+      "",
+      "Prompts:",
+      "- Use new-2d-player / new-3d-player to scaffold player scenes, gdscript-conventions before writing GDScript, and audit-scene to review an existing scene.",
+    ].join("\n"),
   }
 );
+
+// Route server-side logging through the shared logger so the executor and
+// tool handlers can emit diagnostic messages without holding a server ref.
+setServerLogger((level, logger, data) =>
+  server.sendLoggingMessage({ level, logger, data })
+);
+setResourceListChangedNotifier(() => server.sendResourceListChanged());
+
+// Allow the client to dial logging verbosity up or down.
+server.setRequestHandler(SetLevelRequestSchema, async (request) => {
+  setMinimumLogLevel(request.params.level);
+  await log("info", "godot-mcp", { message: "Log level changed", level: request.params.level });
+  return {};
+});
 
 // Set up request handlers
 function setupHandlers(): void {
@@ -114,9 +154,14 @@ function setupHandlers(): void {
         name: tool.name,
         description: tool.description,
         inputSchema: tool.inputSchema,
+        ...(tool.annotations ? { annotations: tool.annotations } : {}),
       })),
     };
   });
+
+  // Resource and prompt handlers are registered against the same server.
+  setupResourceHandlers(server, godotExecutor);
+  setupPromptHandlers(server);
 
   // Handle call tool request
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -170,6 +215,12 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  await log("info", "godot-mcp", {
+    message: "godot-mcp server started",
+    godot_available: godotExecutor !== null,
+    godot_path: godotExecutor?.getGodotPath(),
+  });
 }
 
 main().catch((error) => {

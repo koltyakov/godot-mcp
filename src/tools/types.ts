@@ -1,6 +1,13 @@
 import { z } from "zod";
 import type { GodotExecutor } from "../godot/executor.js";
 
+export interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -9,7 +16,11 @@ export interface ToolDefinition {
     properties: Record<string, unknown>;
     required?: string[];
   };
+  annotations?: ToolAnnotations;
 }
+
+export const readOnlyAnnotations: ToolAnnotations = { readOnlyHint: true };
+export const destructiveAnnotations: ToolAnnotations = { destructiveHint: true };
 
 export interface ToolHandler {
   definition: ToolDefinition;

@@ -1,4 +1,5 @@
 import type { ToolHandler } from "./types.js";
+import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { executeGodotOperation } from "./godot-operation.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import {
@@ -42,6 +43,7 @@ export const createScriptTool: ToolHandler = {
       },
       required: ["script_path"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {
@@ -99,6 +101,7 @@ export const attachScriptTool: ToolHandler = {
       },
       required: ["scene_path", "script_path"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {
@@ -146,6 +149,7 @@ export const readScriptTool: ToolHandler = {
       },
       required: ["script_path"],
     },
+    annotations: readOnlyAnnotations,
   },
   async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
@@ -184,6 +188,7 @@ export const editScriptTool: ToolHandler = {
       },
       required: ["script_path", "content"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     const content = args.content as string;
@@ -216,6 +221,7 @@ export const listScriptsTool: ToolHandler = {
       },
       required: [],
     },
+    annotations: readOnlyAnnotations,
   },
   async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);

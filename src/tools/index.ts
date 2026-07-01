@@ -1,5 +1,6 @@
 import type { ToolDefinition, ToolHandler } from "./types.js";
 import type { GodotExecutor } from "../godot/executor.js";
+import { notifyResourcesChanged } from "../notifications.js";
 
 import { sceneTools } from "./scene-tools.js";
 import { scriptTools } from "./script-tools.js";
@@ -21,6 +22,17 @@ for (const tool of allTools) {
 }
 
 /**
+ * A tool is considered to mutate project contents when it is annotated
+ * destructive (writes files) or open-world (e.g. runs arbitrary code
+ * that may touch the project). Read-only tools do not trigger resource
+ * list-changed notifications.
+ */
+function toolMutatesProject(tool: ToolHandler): boolean {
+  const annotations = tool.definition.annotations;
+  return Boolean(annotations?.destructiveHint || annotations?.openWorldHint);
+}
+
+/**
  * Get all tool definitions for the MCP server
  */
 export function getAllTools(): ToolDefinition[] {
@@ -36,13 +48,19 @@ export async function executeTool(
   executor: GodotExecutor | null
 ): Promise<unknown> {
   const tool = toolMap.get(name);
-  
+
   if (!tool) {
     throw new Error(`Unknown tool: ${name}`);
   }
 
-  return tool.execute(args, executor);
+  const result = await tool.execute(args, executor);
+
+  if (toolMutatesProject(tool)) {
+    await notifyResourcesChanged();
+  }
+
+  return result;
 }
 
 // Re-export types
-export type { ToolDefinition, ToolHandler } from "./types.js";
+export type { ToolDefinition, ToolHandler, ToolAnnotations } from "./types.js";

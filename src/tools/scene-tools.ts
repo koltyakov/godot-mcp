@@ -1,4 +1,5 @@
 import type { ToolHandler } from "./types.js";
+import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import { normalizeResourcePath, SCENE_EXTENSIONS } from "./path-utils.js";
 
@@ -28,6 +29,7 @@ export const createSceneTool: ToolHandler = {
       },
       required: ["scene_path"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {
@@ -90,6 +92,7 @@ export const addNodeTool: ToolHandler = {
       },
       required: ["scene_path", "node_type", "node_name"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {
@@ -142,6 +145,7 @@ export const removeNodeTool: ToolHandler = {
       },
       required: ["scene_path", "node_path"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {
@@ -193,6 +197,7 @@ export const modifyNodeTool: ToolHandler = {
       },
       required: ["scene_path", "node_path", "properties"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {
@@ -237,6 +242,7 @@ export const readSceneTool: ToolHandler = {
       },
       required: ["scene_path"],
     },
+    annotations: readOnlyAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {
@@ -277,6 +283,7 @@ export const listNodesTool: ToolHandler = {
       },
       required: ["scene_path"],
     },
+    annotations: readOnlyAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {

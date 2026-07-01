@@ -766,101 +766,24 @@ func _to_json_safe(value, depth: int = 0):
 			return str(value)
 
 func _create_node_of_type(type_name: String) -> Node:
-	match type_name:
-		"Node": return Node.new()
-		"Node2D": return Node2D.new()
-		"Node3D": return Node3D.new()
-		"Sprite2D": return Sprite2D.new()
-		"Sprite3D": return Sprite3D.new()
-		"Camera2D": return Camera2D.new()
-		"Camera3D": return Camera3D.new()
-		"CharacterBody2D": return CharacterBody2D.new()
-		"CharacterBody3D": return CharacterBody3D.new()
-		"RigidBody2D": return RigidBody2D.new()
-		"RigidBody3D": return RigidBody3D.new()
-		"StaticBody2D": return StaticBody2D.new()
-		"StaticBody3D": return StaticBody3D.new()
-		"Area2D": return Area2D.new()
-		"Area3D": return Area3D.new()
-		"CollisionShape2D": return CollisionShape2D.new()
-		"CollisionShape3D": return CollisionShape3D.new()
-		"MeshInstance3D": return MeshInstance3D.new()
-		"DirectionalLight3D": return DirectionalLight3D.new()
-		"PointLight2D": return PointLight2D.new()
-		"OmniLight3D": return OmniLight3D.new()
-		"SpotLight3D": return SpotLight3D.new()
-		"AnimationPlayer": return AnimationPlayer.new()
-		"AnimatedSprite2D": return AnimatedSprite2D.new()
-		"AudioStreamPlayer": return AudioStreamPlayer.new()
-		"AudioStreamPlayer2D": return AudioStreamPlayer2D.new()
-		"AudioStreamPlayer3D": return AudioStreamPlayer3D.new()
-		"Control": return Control.new()
-		"Label": return Label.new()
-		"Button": return Button.new()
-		"TextureRect": return TextureRect.new()
-		"Panel": return Panel.new()
-		"CanvasLayer": return CanvasLayer.new()
-		"ParallaxBackground": return ParallaxBackground.new()
-		"ParallaxLayer": return ParallaxLayer.new()
-		"TileMap": return TileMap.new()
-		"Path2D": return Path2D.new()
-		"Path3D": return Path3D.new()
-		"PathFollow2D": return PathFollow2D.new()
-		"PathFollow3D": return PathFollow3D.new()
-		"Timer": return Timer.new()
-		"GPUParticles2D": return GPUParticles2D.new()
-		"GPUParticles3D": return GPUParticles3D.new()
-		"CPUParticles2D": return CPUParticles2D.new()
-		"CPUParticles3D": return CPUParticles3D.new()
-		"WorldEnvironment": return WorldEnvironment.new()
-		"NavigationRegion2D": return NavigationRegion2D.new()
-		"NavigationRegion3D": return NavigationRegion3D.new()
-		_:
-			# Try to instantiate by class name
-			if ClassDB.class_exists(type_name):
-				var instance = ClassDB.instantiate(type_name)
-				if instance is Node:
-					return instance
-			return null
+	# Historically this function had a hardcoded match table for ~45 node types.
+	# ClassDB.instantiate covers all of them (and any future/exotic node types)
+	# and the caller already rejects null results, so we let the engine do it.
+	if ClassDB.class_exists(type_name):
+		var instance = ClassDB.instantiate(type_name)
+		if instance is Node:
+			return instance
+	return null
 
 
 func _create_resource_of_type(type_name: String) -> Resource:
-	match type_name:
-		"CircleShape2D": return CircleShape2D.new()
-		"RectangleShape2D": return RectangleShape2D.new()
-		"CapsuleShape2D": return CapsuleShape2D.new()
-		"BoxShape3D": return BoxShape3D.new()
-		"SphereShape3D": return SphereShape3D.new()
-		"CapsuleShape3D": return CapsuleShape3D.new()
-		"StandardMaterial3D": return StandardMaterial3D.new()
-		"ShaderMaterial": return ShaderMaterial.new()
-		"CanvasItemMaterial": return CanvasItemMaterial.new()
-		"BoxMesh": return BoxMesh.new()
-		"SphereMesh": return SphereMesh.new()
-		"CapsuleMesh": return CapsuleMesh.new()
-		"CylinderMesh": return CylinderMesh.new()
-		"PlaneMesh": return PlaneMesh.new()
-		"QuadMesh": return QuadMesh.new()
-		"Environment": return Environment.new()
-		"Curve": return Curve.new()
-		"Curve2D": return Curve2D.new()
-		"Curve3D": return Curve3D.new()
-		"Gradient": return Gradient.new()
-		"GradientTexture1D": return GradientTexture1D.new()
-		"GradientTexture2D": return GradientTexture2D.new()
-		"NoiseTexture2D": return NoiseTexture2D.new()
-		"Animation": return Animation.new()
-		"AnimationLibrary": return AnimationLibrary.new()
-		"SpriteFrames": return SpriteFrames.new()
-		"LabelSettings": return LabelSettings.new()
-		"StyleBoxFlat": return StyleBoxFlat.new()
-		"StyleBoxTexture": return StyleBoxTexture.new()
-		_:
-			if ClassDB.class_exists(type_name):
-				var res = ClassDB.instantiate(type_name)
-				if res is Resource:
-					return res
-			return null
+	# Same reasoning as _create_node_of_type: ClassDB covers every built-in
+	# Resource subclass without maintaining a hardcoded list.
+	if ClassDB.class_exists(type_name):
+		var res = ClassDB.instantiate(type_name)
+		if res is Resource:
+			return res
+	return null
 
 
 func _generate_script_template(extends_type: String, class_name_str: String, template: String) -> String:

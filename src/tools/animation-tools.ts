@@ -1,4 +1,5 @@
 import type { ToolHandler } from "./types.js";
+import { destructiveAnnotations } from "./types.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import { normalizeResourcePath, SCENE_EXTENSIONS } from "./path-utils.js";
 
@@ -38,6 +39,7 @@ export const createAnimationTool: ToolHandler = {
       },
       required: ["scene_path"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {
@@ -119,6 +121,7 @@ export const addAnimationTrackTool: ToolHandler = {
       },
       required: ["scene_path", "animation_player_path", "animation_name", "target_node_path", "property", "keyframes"],
     },
+    annotations: destructiveAnnotations,
   },
   async execute(args, executor) {
     if (!executor) {

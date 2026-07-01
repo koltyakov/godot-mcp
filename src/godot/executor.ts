@@ -2,6 +2,8 @@ import { spawn } from "child_process";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
+import { log } from "../logger.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -48,12 +50,33 @@ export class GodotExecutor {
       "--", operation, JSON.stringify(params),
     ];
 
+    const startedAt = Date.now();
+    await log("debug", "godot-mcp", {
+      message: "Spawning headless Godot",
+      operation,
+      project_path: projectPath,
+    });
+
     const processResult = await this.runBuffered(args, projectPath);
+    const durationMs = Date.now() - startedAt;
+
     if (processResult.error) {
+      await log("error", "godot-mcp", {
+        message: "Failed to spawn Godot process",
+        operation,
+        project_path: projectPath,
+        error: processResult.error,
+      });
       return { success: false, output: processResult.stdout.trim(), error: processResult.error };
     }
 
     if (processResult.timedOut) {
+      await log("error", "godot-mcp", {
+        message: "Godot operation timed out",
+        operation,
+        project_path: projectPath,
+        timeout_ms: DEFAULT_TIMEOUT_MS,
+      });
       return {
         success: false,
         output: processResult.stdout.trim(),
@@ -82,14 +105,47 @@ export class GodotExecutor {
           enumerable: false,
         });
 
+        if (!executionResult.success) {
+          await log("warning", "godot-mcp", {
+            message: "Godot operation reported failure",
+            operation,
+            project_path: projectPath,
+            error: result.error,
+            duration_ms: durationMs,
+          });
+        } else {
+          await log("debug", "godot-mcp", {
+            message: "Godot operation completed",
+            operation,
+            project_path: projectPath,
+            duration_ms: durationMs,
+          });
+        }
+
         return executionResult;
       } catch {
         // Fall through to the raw process result for malformed marker output.
+        await log("warning", "godot-mcp", {
+          message: "Could not parse GODOT_MCP_RESULT marker payload",
+          operation,
+          project_path: projectPath,
+        });
       }
     }
 
     const stderr = processResult.stderr.trim();
     const truncationNote = processResult.truncated ? "Output truncated while running Godot" : undefined;
+
+    if (processResult.code !== 0) {
+      await log("error", "godot-mcp", {
+        message: "Godot process exited non-zero",
+        operation,
+        project_path: projectPath,
+        exit_code: processResult.code,
+        stderr: stderr.slice(0, 1000) || undefined,
+        duration_ms: durationMs,
+      });
+    }
 
     return {
       success: processResult.code === 0,
