@@ -35,7 +35,7 @@ test("editScriptTool writes scripts inside the project and readScriptTool reads 
   );
 
   assert.deepEqual(readResult, {
-    script_path: "scripts/player.gd",
+    script_path: "res://scripts/player.gd",
     content,
     line_count: 5,
   });
@@ -53,7 +53,7 @@ test("script tools reject absolute paths and project traversal", async (t) => {
       },
       null
     ),
-    /Path must be relative to the project or use res:\/\//
+    /script_path must be relative to the project or use res:\/\//
   );
 
   await assert.rejects(
@@ -64,7 +64,7 @@ test("script tools reject absolute paths and project traversal", async (t) => {
       },
       null
     ),
-    /Path escapes project directory/
+    /script_path escapes project directory/
   );
 });
 

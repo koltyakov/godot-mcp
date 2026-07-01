@@ -1,6 +1,6 @@
 import type { ToolHandler } from "./types.js";
-import type { GodotExecutor } from "../godot/executor.js";
-import { isGodotProject } from "../godot/finder.js";
+import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
+import { normalizeResourcePath, SCENE_EXTENSIONS } from "./path-utils.js";
 
 // Create Scene Tool
 export const createSceneTool: ToolHandler = {
@@ -10,10 +10,7 @@ export const createSceneTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory (containing project.godot)",
-        },
+        ...projectSelectorProperties,
         scene_path: {
           type: "string",
           description: "Path for the new scene file relative to project root (e.g., 'res://scenes/main.tscn')",
@@ -29,22 +26,21 @@ export const createSceneTool: ToolHandler = {
           default: "Root",
         },
       },
-      required: ["project_path", "scene_path"],
+      required: ["scene_path"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scenePath = args.scene_path as string;
-    const rootType = (args.root_type as string) || "Node2D";
-    const rootName = (args.root_name as string) || "Root";
-
     if (!executor) {
       throw new Error("Godot is not available. Please ensure Godot is installed and accessible.");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
+    const rootType = (args.root_type as string) || "Node2D";
+    const rootName = (args.root_name as string) || "Root";
 
     const result = await executor.execute(projectPath, "create_scene", {
       scene_path: scenePath,
@@ -68,10 +64,7 @@ export const addNodeTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         scene_path: {
           type: "string",
           description: "Path to the scene file (e.g., 'res://scenes/main.tscn')",
@@ -95,24 +88,23 @@ export const addNodeTool: ToolHandler = {
           additionalProperties: true,
         },
       },
-      required: ["project_path", "scene_path", "node_type", "node_name"],
+      required: ["scene_path", "node_type", "node_name"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scenePath = args.scene_path as string;
-    const parentPath = (args.parent_path as string) || ".";
-    const nodeType = args.node_type as string;
-    const nodeName = args.node_name as string;
-    const properties = (args.properties as Record<string, unknown>) || {};
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
+    const parentPath = (args.parent_path as string) || ".";
+    const nodeType = args.node_type as string;
+    const nodeName = args.node_name as string;
+    const properties = (args.properties as Record<string, unknown>) || {};
 
     const result = await executor.execute(projectPath, "add_node", {
       scene_path: scenePath,
@@ -138,10 +130,7 @@ export const removeNodeTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         scene_path: {
           type: "string",
           description: "Path to the scene file",
@@ -151,21 +140,20 @@ export const removeNodeTool: ToolHandler = {
           description: "Path to the node to remove (relative to scene root)",
         },
       },
-      required: ["project_path", "scene_path", "node_path"],
+      required: ["scene_path", "node_path"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scenePath = args.scene_path as string;
-    const nodePath = args.node_path as string;
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
+    const nodePath = args.node_path as string;
 
     const result = await executor.execute(projectPath, "remove_node", {
       scene_path: scenePath,
@@ -188,10 +176,7 @@ export const modifyNodeTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         scene_path: {
           type: "string",
           description: "Path to the scene file",
@@ -206,22 +191,21 @@ export const modifyNodeTool: ToolHandler = {
           additionalProperties: true,
         },
       },
-      required: ["project_path", "scene_path", "node_path", "properties"],
+      required: ["scene_path", "node_path", "properties"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scenePath = args.scene_path as string;
-    const nodePath = args.node_path as string;
-    const properties = args.properties as Record<string, unknown>;
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
+    const nodePath = args.node_path as string;
+    const properties = args.properties as Record<string, unknown>;
 
     const result = await executor.execute(projectPath, "modify_node", {
       scene_path: scenePath,
@@ -245,29 +229,25 @@ export const readSceneTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         scene_path: {
           type: "string",
           description: "Path to the scene file to read",
         },
       },
-      required: ["project_path", "scene_path"],
+      required: ["scene_path"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scenePath = args.scene_path as string;
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
 
     const result = await executor.execute(projectPath, "read_scene", {
       scene_path: scenePath,
@@ -289,29 +269,25 @@ export const listNodesTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         scene_path: {
           type: "string",
           description: "Path to the scene file",
         },
       },
-      required: ["project_path", "scene_path"],
+      required: ["scene_path"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scenePath = args.scene_path as string;
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
 
     const result = await executor.execute(projectPath, "list_nodes", {
       scene_path: scenePath,

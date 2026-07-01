@@ -1,8 +1,13 @@
 import type { ToolHandler } from "./types.js";
-import type { GodotExecutor } from "../godot/executor.js";
-import { isGodotProject, findSceneFiles, findScriptFiles } from "../godot/finder.js";
+import { findOpenGodotProjects, findSceneFiles, findScriptFiles } from "../godot/finder.js";
 import * as fs from "fs/promises";
 import * as path from "path";
+import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
+import {
+  normalizeAbsoluteProjectPath,
+  normalizeResourcePath,
+  RESOURCE_EXTENSIONS,
+} from "./path-utils.js";
 
 function formatConfigString(value: string): string {
   return JSON.stringify(value);
@@ -16,20 +21,13 @@ export const getProjectInfoTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
       },
-      required: ["project_path"],
+      required: [],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
 
     // Read project.godot file directly for basic info even without Godot
     const projectFile = path.join(projectPath, "project.godot");
@@ -74,20 +72,13 @@ export const listScenesTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
       },
-      required: ["project_path"],
+      required: [],
     },
   },
   async execute(args, _executor) {
-    const projectPath = args.project_path as string;
-
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
 
     const scenes = await findSceneFiles(projectPath);
 
@@ -107,24 +98,17 @@ export const launchEditorTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
       },
-      required: ["project_path"],
+      required: [],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
 
     const result = await executor.launchEditor(projectPath);
     if (!result.success) {
@@ -143,24 +127,17 @@ export const runProjectTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
       },
-      required: ["project_path"],
+      required: [],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
 
     const result = await executor.runProject(projectPath);
     if (!result.success) {
@@ -168,6 +145,27 @@ export const runProjectTool: ToolHandler = {
     }
 
     return result.output;
+  },
+};
+
+// List Open Projects Tool
+export const listOpenProjectsTool: ToolHandler = {
+  definition: {
+    name: "list_open_projects",
+    description: "List Godot projects currently opened by running Godot editor processes",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  async execute(_args, _executor) {
+    const projects = await findOpenGodotProjects();
+    return {
+      projects,
+      count: projects.length,
+      default_project: projects.length === 1 ? projects[0] : null,
+    };
   },
 };
 
@@ -205,10 +203,7 @@ export const createResourceTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         resource_path: {
           type: "string",
           description: "Path for the new resource file (e.g., 'res://resources/my_material.tres')",
@@ -223,22 +218,21 @@ export const createResourceTool: ToolHandler = {
           additionalProperties: true,
         },
       },
-      required: ["project_path", "resource_path", "resource_type"],
+      required: ["resource_path", "resource_type"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const resourcePath = args.resource_path as string;
-    const resourceType = args.resource_type as string;
-    const properties = (args.properties as Record<string, unknown>) || {};
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const resourcePath = normalizeResourcePath(args.resource_path as string, {
+      fieldName: "resource_path",
+      extensions: RESOURCE_EXTENSIONS,
+    });
+    const resourceType = args.resource_type as string;
+    const properties = (args.properties as Record<string, unknown>) || {};
 
     const result = await executor.execute(projectPath, "create_resource", {
       resource_path: resourcePath,
@@ -281,7 +275,7 @@ export const initProjectTool: ToolHandler = {
     },
   },
   async execute(args, _executor) {
-    const projectPath = args.project_path as string;
+    const projectPath = normalizeAbsoluteProjectPath(args.project_path as string);
     const projectName = args.project_name as string;
     const renderer = (args.renderer as string) || "forward_plus";
 
@@ -348,6 +342,7 @@ export const projectTools = [
   listScenesTool,
   launchEditorTool,
   runProjectTool,
+  listOpenProjectsTool,
   getGodotVersionTool,
   createResourceTool,
   initProjectTool,

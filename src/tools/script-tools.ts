@@ -1,28 +1,14 @@
 import type { ToolHandler } from "./types.js";
-import type { GodotExecutor } from "../godot/executor.js";
-import { isGodotProject } from "../godot/finder.js";
+import { findScriptFiles } from "../godot/finder.js";
 import * as fs from "fs/promises";
-import * as path from "path";
-
-function resolveProjectFilePath(projectPath: string, resourcePath: string): string {
-  const relativePath = resourcePath.startsWith("res://")
-    ? resourcePath.slice("res://".length)
-    : resourcePath;
-
-  if (!relativePath || path.isAbsolute(relativePath)) {
-    throw new Error(`Path must be relative to the project or use res://: ${resourcePath}`);
-  }
-
-  const projectRoot = path.resolve(projectPath);
-  const targetPath = path.resolve(projectRoot, relativePath);
-  const isInsideProject = targetPath === projectRoot || targetPath.startsWith(projectRoot + path.sep);
-
-  if (!isInsideProject) {
-    throw new Error(`Path escapes project directory: ${resourcePath}`);
-  }
-
-  return targetPath;
-}
+import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
+import {
+  normalizeResourcePath,
+  resolveExistingProjectFilePath,
+  resolveWritableProjectFilePath,
+  SCENE_EXTENSIONS,
+  SCRIPT_EXTENSIONS,
+} from "./path-utils.js";
 
 // Create Script Tool
 export const createScriptTool: ToolHandler = {
@@ -32,10 +18,7 @@ export const createScriptTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         script_path: {
           type: "string",
           description: "Path for the new script file (e.g., 'res://scripts/player.gd')",
@@ -60,24 +43,23 @@ export const createScriptTool: ToolHandler = {
           default: "default",
         },
       },
-      required: ["project_path", "script_path"],
+      required: ["script_path"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scriptPath = args.script_path as string;
-    const extendsType = (args.extends as string) || "Node";
-    const className = args.class_name as string | undefined;
-    const content = args.content as string | undefined;
-    const template = (args.template as string) || "default";
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const scriptPath = normalizeResourcePath(args.script_path as string, {
+      fieldName: "script_path",
+      extensions: SCRIPT_EXTENSIONS,
+    });
+    const extendsType = (args.extends as string) || "Node";
+    const className = args.class_name as string | undefined;
+    const content = args.content as string | undefined;
+    const template = (args.template as string) || "default";
 
     const result = await executor.execute(projectPath, "create_script", {
       script_path: scriptPath,
@@ -103,10 +85,7 @@ export const attachScriptTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         scene_path: {
           type: "string",
           description: "Path to the scene file",
@@ -121,22 +100,24 @@ export const attachScriptTool: ToolHandler = {
           description: "Path to the GDScript file to attach",
         },
       },
-      required: ["project_path", "scene_path", "script_path"],
+      required: ["scene_path", "script_path"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scenePath = args.scene_path as string;
-    const nodePath = (args.node_path as string) || ".";
-    const scriptPath = args.script_path as string;
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
+    const nodePath = (args.node_path as string) || ".";
+    const scriptPath = normalizeResourcePath(args.script_path as string, {
+      fieldName: "script_path",
+      extensions: SCRIPT_EXTENSIONS,
+    });
 
     const result = await executor.execute(projectPath, "attach_script", {
       scene_path: scenePath,
@@ -160,29 +141,27 @@ export const readScriptTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         script_path: {
           type: "string",
           description: "Path to the script file (e.g., 'res://scripts/player.gd')",
         },
       },
-      required: ["project_path", "script_path"],
+      required: ["script_path"],
     },
   },
   async execute(args, _executor) {
-    const projectPath = args.project_path as string;
-    const scriptPath = args.script_path as string;
-
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
-
-    const fsPath = resolveProjectFilePath(projectPath, scriptPath);
+    const projectPath = await resolveProjectPath(args);
 
     try {
+      const { fsPath, resourcePath: scriptPath } = await resolveExistingProjectFilePath(
+        projectPath,
+        args.script_path as string,
+        {
+          fieldName: "script_path",
+          extensions: SCRIPT_EXTENSIONS,
+        }
+      );
       const content = await fs.readFile(fsPath, "utf-8");
       return {
         script_path: scriptPath,
@@ -203,10 +182,7 @@ export const editScriptTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         script_path: {
           type: "string",
           description: "Path to the script file",
@@ -216,23 +192,23 @@ export const editScriptTool: ToolHandler = {
           description: "New content for the script file",
         },
       },
-      required: ["project_path", "script_path", "content"],
+      required: ["script_path", "content"],
     },
   },
   async execute(args, _executor) {
-    const projectPath = args.project_path as string;
-    const scriptPath = args.script_path as string;
     const content = args.content as string;
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
-
-    const fsPath = resolveProjectFilePath(projectPath, scriptPath);
+    const projectPath = await resolveProjectPath(args);
+    const { fsPath, resourcePath: scriptPath } = await resolveWritableProjectFilePath(
+      projectPath,
+      args.script_path as string,
+      {
+        fieldName: "script_path",
+        extensions: SCRIPT_EXTENSIONS,
+      }
+    );
 
     try {
-      // Ensure directory exists
-      await fs.mkdir(path.dirname(fsPath), { recursive: true });
       await fs.writeFile(fsPath, content, "utf-8");
       return {
         success: true,
@@ -253,32 +229,20 @@ export const listScriptsTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
       },
-      required: ["project_path"],
+      required: [],
     },
   },
-  async execute(args, executor) {
-    const projectPath = args.project_path as string;
+  async execute(args, _executor) {
+    const projectPath = await resolveProjectPath(args);
+    const scripts = await findScriptFiles(projectPath);
 
-    if (!executor) {
-      throw new Error("Godot is not available");
-    }
-
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
-
-    const result = await executor.execute(projectPath, "list_scripts", {});
-
-    if (!result.success) {
-      throw new Error(result.error || "Failed to list scripts");
-    }
-
-    return result.output;
+    return {
+      project_path: projectPath,
+      scripts,
+      count: scripts.length,
+    };
   },
 };
 

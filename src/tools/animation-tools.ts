@@ -1,6 +1,6 @@
 import type { ToolHandler } from "./types.js";
-import type { GodotExecutor } from "../godot/executor.js";
-import { isGodotProject } from "../godot/finder.js";
+import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
+import { normalizeResourcePath, SCENE_EXTENSIONS } from "./path-utils.js";
 
 // Create Animation Tool
 export const createAnimationTool: ToolHandler = {
@@ -10,10 +10,7 @@ export const createAnimationTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         scene_path: {
           type: "string",
           description: "Path to the scene file",
@@ -39,24 +36,23 @@ export const createAnimationTool: ToolHandler = {
           default: false,
         },
       },
-      required: ["project_path", "scene_path"],
+      required: ["scene_path"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scenePath = args.scene_path as string;
-    const nodePath = (args.node_path as string) || ".";
-    const animationName = (args.animation_name as string) || "default";
-    const duration = (args.duration as number) || 1.0;
-    const loop = (args.loop as boolean) || false;
-
     if (!executor) {
       throw new Error("Godot is not available");
     }
 
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
+    const nodePath = (args.node_path as string) || ".";
+    const animationName = (args.animation_name as string) || "default";
+    const duration = (args.duration as number | undefined) ?? 1.0;
+    const loop = (args.loop as boolean | undefined) ?? false;
 
     const result = await executor.execute(projectPath, "create_animation", {
       scene_path: scenePath,
@@ -82,10 +78,7 @@ export const addAnimationTrackTool: ToolHandler = {
     inputSchema: {
       type: "object",
       properties: {
-        project_path: {
-          type: "string",
-          description: "Absolute path to the Godot project directory",
-        },
+        ...projectSelectorProperties,
         scene_path: {
           type: "string",
           description: "Path to the scene file",
@@ -124,25 +117,24 @@ export const addAnimationTrackTool: ToolHandler = {
           },
         },
       },
-      required: ["project_path", "scene_path", "animation_player_path", "animation_name", "target_node_path", "property", "keyframes"],
+      required: ["scene_path", "animation_player_path", "animation_name", "target_node_path", "property", "keyframes"],
     },
   },
   async execute(args, executor) {
-    const projectPath = args.project_path as string;
-    const scenePath = args.scene_path as string;
+    if (!executor) {
+      throw new Error("Godot is not available");
+    }
+
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
     const animationPlayerPath = args.animation_player_path as string;
     const animationName = args.animation_name as string;
     const targetNodePath = args.target_node_path as string;
     const property = args.property as string;
     const keyframes = args.keyframes as Array<{ time: number; value: unknown }>;
-
-    if (!executor) {
-      throw new Error("Godot is not available");
-    }
-
-    if (!(await isGodotProject(projectPath))) {
-      throw new Error(`Not a valid Godot project: ${projectPath}`);
-    }
 
     const result = await executor.execute(projectPath, "add_animation_track", {
       scene_path: scenePath,

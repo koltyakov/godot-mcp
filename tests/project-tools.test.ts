@@ -84,10 +84,11 @@ run/main_scene="res://scenes/main.tscn"
   } as GodotExecutor;
 
   const result = await getProjectInfoTool.execute({ project_path: projectPath }, executor);
+  const realProjectPath = await fs.realpath(projectPath);
 
   assert.deepEqual(result, {
     project_name: "Demo Project",
-    project_path: projectPath,
+    project_path: realProjectPath,
     main_scene: "res://scenes/main.tscn",
     scene_count: 2,
     script_count: 1,
@@ -100,9 +101,10 @@ test("listScenesTool lists scenes without requiring a Godot executor", async (t)
   await writeText(path.join(projectPath, "scenes", "main.tscn"));
 
   const result = await listScenesTool.execute({ project_path: projectPath }, null);
+  const realProjectPath = await fs.realpath(projectPath);
 
   assert.deepEqual(result, {
-    project_path: projectPath,
+    project_path: realProjectPath,
     scenes: ["res://scenes/main.tscn"],
     count: 1,
   });

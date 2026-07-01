@@ -32,11 +32,14 @@ An MCP (Model Context Protocol) server that integrates Godot game engine with Co
 
 - **init_project** - Initialize new Godot projects
 - **get_project_info** - Get project information
+- **list_open_projects** - List projects currently opened in Godot editor processes
 - **list_scenes** - List all scene files
 - **launch_editor** - Launch Godot editor
 - **run_project** - Run the project
 - **get_godot_version** - Get Godot version info
 - **create_resource** - Create resource files (.tres)
+
+Project-targeted tools accept `project_path`, but it is optional when Godot has an opened project. If exactly one open project is detected, the server uses it by default. If multiple projects are open, provide `project_name` or `project_path`; ambiguous requests report the available open projects so the client can ask which one to use.
 
 ## Prerequisites
 

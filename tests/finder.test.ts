@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
-import { findSceneFiles, findScriptFiles, isGodotProject } from "../src/godot/finder.js";
+import {
+  findSceneFiles,
+  findScriptFiles,
+  isGodotProject,
+  parseGodotProjectPathFromCommandLine,
+  resolveOpenGodotProjectsFromProcesses,
+} from "../src/godot/finder.js";
 import { createGodotProject, createTempDir, writeText } from "./helpers.js";
 
 test("isGodotProject requires a readable project.godot file", async (t) => {
@@ -47,4 +54,68 @@ test("file search helpers return an empty list when scanning fails", async (t) =
 
   assert.deepEqual(await findSceneFiles(missingPath), []);
   assert.deepEqual(await findScriptFiles(missingPath), []);
+});
+
+test("parseGodotProjectPathFromCommandLine handles Godot path arguments", () => {
+  assert.equal(
+    parseGodotProjectPathFromCommandLine('/Applications/Godot.app/Contents/MacOS/Godot --editor --path "/Users/me/My Game"'),
+    "/Users/me/My Game"
+  );
+  assert.equal(parseGodotProjectPathFromCommandLine("godot4 --path=/tmp/demo"), "/tmp/demo");
+  assert.equal(parseGodotProjectPathFromCommandLine("godot C:\\Games\\demo\\project.godot"), "C:\\Games\\demo");
+});
+
+test("resolveOpenGodotProjectsFromProcesses returns named open projects", async (t) => {
+  const dir = await createTempDir(t);
+  const firstProjectPath = path.join(dir, "First Game");
+  const secondProjectPath = path.join(dir, "second-game");
+  await writeText(
+    path.join(firstProjectPath, "project.godot"),
+    `config_version=5
+
+[application]
+
+config/name="First Game"
+`
+  );
+  await writeText(
+    path.join(secondProjectPath, "project.godot"),
+    `config_version=5
+
+[application]
+
+config/name="Second Game"
+`
+  );
+
+  const projects = await resolveOpenGodotProjectsFromProcesses([
+    {
+      pid: 100,
+      commandLine: `/Applications/Godot.app/Contents/MacOS/Godot --editor --path "${firstProjectPath}"`,
+    },
+    {
+      pid: 101,
+      commandLine: "/usr/bin/godot4 --editor",
+      cwd: secondProjectPath,
+    },
+    {
+      pid: 102,
+      commandLine: `/Applications/Godot.app/Contents/MacOS/Godot --path "${firstProjectPath}"`,
+    },
+  ]);
+  const realFirstProjectPath = await fs.realpath(firstProjectPath);
+  const realSecondProjectPath = await fs.realpath(secondProjectPath);
+
+  assert.deepEqual(projects, [
+    {
+      project_name: "First Game",
+      project_path: realFirstProjectPath,
+      process_ids: [100, 102],
+    },
+    {
+      project_name: "Second Game",
+      project_path: realSecondProjectPath,
+      process_ids: [101],
+    },
+  ]);
 });

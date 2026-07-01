@@ -9,8 +9,19 @@ test("getAllTools returns unique tool definitions", () => {
   const names = tools.map((tool) => tool.name);
 
   assert.ok(names.includes("get_project_info"));
+  assert.ok(names.includes("list_open_projects"));
   assert.ok(names.includes("create_scene"));
   assert.equal(new Set(names).size, names.length);
+});
+
+test("project-targeted tools expose optional project selectors", () => {
+  const tools = getAllTools();
+  const getProjectInfo = tools.find((tool) => tool.name === "get_project_info");
+
+  assert.ok(getProjectInfo);
+  assert.deepEqual(getProjectInfo.inputSchema.required, []);
+  assert.ok("project_path" in getProjectInfo.inputSchema.properties);
+  assert.ok("project_name" in getProjectInfo.inputSchema.properties);
 });
 
 test("executeTool dispatches known tools and rejects unknown tools", async (t) => {
