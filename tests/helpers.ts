@@ -1,0 +1,34 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+
+type TestContextWithCleanup = {
+  after: (fn: () => Promise<void> | void) => void;
+};
+
+export async function createTempDir(t: TestContextWithCleanup): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "godot-mcp-test-"));
+  t.after(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  return dir;
+}
+
+export async function writeText(filePath: string, content = ""): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content, "utf-8");
+}
+
+export async function createGodotProject(
+  t: TestContextWithCleanup,
+  projectFileContent = `config_version=5
+
+[application]
+
+config/name="Test Project"
+`
+): Promise<string> {
+  const projectPath = await createTempDir(t);
+  await writeText(path.join(projectPath, "project.godot"), projectFileContent);
+  return projectPath;
+}
