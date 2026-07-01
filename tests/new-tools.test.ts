@@ -187,7 +187,7 @@ test("add_node forwards instance_scene_path when provided", async (t) => {
       scene_path: "res://level.tscn",
       node_type: "Node",
       node_name: "Enemy",
-      instance_scene_path: "res://scenes/enemy.tscn",
+      instance_scene_path: "scenes/enemy.tscn",
     },
     executor
   );
@@ -208,6 +208,20 @@ test("add_node forwards instance_scene_path when provided", async (t) => {
     executor2
   );
   assert.ok(!("instance_scene_path" in received2));
+
+  await assert.rejects(
+    addNodeTool.execute(
+      {
+        project_path: projectPath,
+        scene_path: "res://level.tscn",
+        node_type: "Node",
+        node_name: "Bad",
+        instance_scene_path: "res://scripts/not-a-scene.gd",
+      },
+      executor2
+    ),
+    /instance_scene_path must end with .tscn or .scn/
+  );
 });
 
 // addNodeTool is imported lazily inside the test that uses it.

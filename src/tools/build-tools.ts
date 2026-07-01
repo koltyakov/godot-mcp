@@ -4,11 +4,32 @@ import * as path from "path";
 import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
-import { getProjectFilePath } from "./path-utils.js";
+import { resolveExistingProjectFilePath } from "./path-utils.js";
 
 // Long-running build/export operations get a generous timeout. Projects with
 // large assets or remote-export toolchains can take several minutes.
 const BUILD_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+function normalizeExportOutputPath(projectPath: string, outputPath: string): string {
+  if (!outputPath) {
+    return "";
+  }
+
+  if (outputPath.includes("\0")) {
+    throw new Error("output_path contains an invalid null byte");
+  }
+
+  if (path.isAbsolute(outputPath) || path.win32.isAbsolute(outputPath)) {
+    return outputPath;
+  }
+
+  const normalized = path.normalize(outputPath.replace(/\\/g, path.sep));
+  if (normalized === "." || normalized === ".." || normalized.startsWith(`..${path.sep}`) || path.isAbsolute(normalized)) {
+    throw new Error(`output_path escapes project directory: ${outputPath}`);
+  }
+
+  return path.join(projectPath, normalized);
+}
 
 // Export Project Tool — invokes godot --headless --export-release
 export const exportProjectTool: ToolHandler = {
@@ -42,7 +63,10 @@ export const exportProjectTool: ToolHandler = {
     if (!executor) throw new Error("Godot is not available");
     const projectPath = await resolveProjectPath(args);
     const preset = args.preset as string;
-    const outputPath = typeof args.output_path === "string" ? args.output_path : "";
+    const outputPath = normalizeExportOutputPath(
+      projectPath,
+      typeof args.output_path === "string" ? args.output_path : ""
+    );
     const debug = args.debug === true;
 
     const flag = debug ? "--export-debug" : "--export-release";
@@ -217,12 +241,12 @@ export const readProjectFileTool: ToolHandler = {
   },
   async execute(args) {
     const projectPath = await resolveProjectPath(args);
-    const filePath = getProjectFilePath(projectPath, args.file_path as string, {
+    const { fsPath, resourcePath } = await resolveExistingProjectFilePath(projectPath, args.file_path as string, {
       fieldName: "file_path",
     });
-    const content = await fs.readFile(filePath, "utf-8");
+    const content = await fs.readFile(fsPath, "utf-8");
     return {
-      path: args.file_path as string,
+      path: resourcePath,
       size: content.length,
       content,
     };

@@ -102,6 +102,10 @@ config/name="Second Game"
       pid: 102,
       commandLine: `/Applications/Godot.app/Contents/MacOS/Godot --path "${firstProjectPath}"`,
     },
+    {
+      pid: 103,
+      commandLine: `/Applications/Godot.app/Contents/MacOS/Godot --headless --path "${firstProjectPath}" -s res://batch.gd`,
+    },
   ]);
   const realFirstProjectPath = await fs.realpath(firstProjectPath);
   const realSecondProjectPath = await fs.realpath(secondProjectPath);

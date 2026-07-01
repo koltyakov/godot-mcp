@@ -187,6 +187,20 @@ function looksLikeGodotProcess(commandLine: string): boolean {
   );
 }
 
+function looksLikeTransientGodotProcess(commandLine: string): boolean {
+  const tokens = tokenizeCommandLine(commandLine);
+  return tokens.some((token) => (
+    token === "--headless" ||
+    token === "--script" ||
+    token === "-s" ||
+    token === "--check-only" ||
+    token === "--quit" ||
+    token === "--import" ||
+    token === "--upgrade" ||
+    token.startsWith("--export-")
+  ));
+}
+
 export function parseGodotProjectPathFromCommandLine(commandLine: string): string | null {
   const tokens = tokenizeCommandLine(commandLine);
 
@@ -324,6 +338,10 @@ export async function resolveOpenGodotProjectsFromProcesses(processes: RunningGo
   const projects = new Map<string, OpenGodotProject>();
 
   for (const processInfo of processes) {
+    if (looksLikeTransientGodotProcess(processInfo.commandLine)) {
+      continue;
+    }
+
     const rawProjectPath = parseGodotProjectPathFromCommandLine(processInfo.commandLine) || processInfo.cwd;
     if (!rawProjectPath) {
       continue;

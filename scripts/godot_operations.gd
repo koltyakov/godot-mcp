@@ -16,12 +16,16 @@ func _init():
 	
 	var operation = args[0]
 	var params = {}
+	var result_token = ""
 	
 	if args.size() > 1:
 		var json = JSON.new()
 		var parse_result = json.parse(args[1])
 		if parse_result == OK:
 			params = json.data
+			if params.has("__mcp_result_token"):
+				result_token = String(params["__mcp_result_token"])
+				params.erase("__mcp_result_token")
 		else:
 			_output_error("Failed to parse parameters: " + json.get_error_message())
 			quit(1)
@@ -29,7 +33,7 @@ func _init():
 	
 	# Execute the operation
 	var result = _execute_operation(operation, params)
-	_output_result(result)
+	_output_result(result, result_token)
 	quit(0)
 
 
@@ -1011,6 +1015,8 @@ func _compile_script(params: Dictionary) -> Dictionary:
 		return {"success": false, "error": "Provide 'source' or an existing 'script_path' to validate"}
 
 	var s = GDScript.new()
+	if not script_path.is_empty():
+		s.resource_path = script_path
 	s.source_code = source
 	var reload_result = s.reload()
 	if reload_result != OK:
@@ -1636,12 +1642,19 @@ func _serialize_incoming_connections(node: Node, root: Node) -> Array:
 	for conn in node.get_incoming_connections():
 		var entry = {}
 		if typeof(conn) == TYPE_DICTIONARY:
-			entry["signal"] = String(conn.get("signal", ""))
+			var signal_value = conn.get("signal", null)
+			if typeof(signal_value) == TYPE_SIGNAL:
+				entry["signal"] = String(signal_value.get_name())
+				var source = signal_value.get_object()
+				if source is Node:
+					entry["from"] = str(root.get_path_to(source))
+			else:
+				entry["signal"] = String(signal_value)
 			var callable: Callable = conn.get("callable", Callable())
 			if callable.is_valid():
 				var target = callable.get_object()
 				if target is Node:
-					entry["from"] = str(root.get_path_to(target))
+					entry["to"] = str(root.get_path_to(target))
 				entry["method"] = String(callable.get_method())
 			entry["flags"] = int(conn.get("flags", 0))
 		if entry.size() > 0:
@@ -1771,10 +1784,11 @@ func _scan_for_files(path: String, extensions: Array, results: Array) -> void:
 	dir.list_dir_end()
 
 
-func _output_result(result: Dictionary) -> void:
-	print("[GODOT_MCP_RESULT]")
+func _output_result(result: Dictionary, result_token: String = "") -> void:
+	var token_suffix = ":" + result_token if not result_token.is_empty() else ""
+	print("[GODOT_MCP_RESULT" + token_suffix + "]")
 	print(JSON.stringify(result))
-	print("[/GODOT_MCP_RESULT]")
+	print("[/GODOT_MCP_RESULT" + token_suffix + "]")
 
 
 func _output_error(message: String) -> void:

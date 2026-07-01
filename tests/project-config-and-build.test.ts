@@ -13,8 +13,8 @@ import {
   removeAutoloadTool,
   listInputActionsTool,
 } from "../src/tools/project-config-tools.js";
-import { listExportPresetsTool } from "../src/tools/build-tools.js";
-import { createGodotProject, createMockGodotExecutor, writeText } from "./helpers.js";
+import { exportProjectTool, listExportPresetsTool, readProjectFileTool } from "../src/tools/build-tools.js";
+import { createGodotProject, createMockGodotExecutor, createTempDir, writeText } from "./helpers.js";
 
 test("get_class_info dispatches to classdb_info with class and include", async (t) => {
   const projectPath = await createGodotProject(t);
@@ -59,6 +59,20 @@ test("check_script dispatches with source and script_path", async (t) => {
   assert.equal((result as { ok: boolean }).ok, true);
 });
 
+test("check_script normalizes script_path when validating an existing file", async (t) => {
+  const projectPath = await createGodotProject(t);
+  let received: Record<string, unknown> = {};
+  const executor = createMockGodotExecutor(async (_p, op, params) => {
+    assert.equal(op, "compile_script");
+    received = params;
+    return { success: true, output: "", data: { success: true, ok: true } };
+  });
+
+  await checkScriptTool.execute({ project_path: projectPath, script_path: "scripts/player.gd" }, executor);
+
+  assert.equal(received.script_path, "res://scripts/player.gd");
+});
+
 test("get_project_settings, set_project_setting, list_autoloads, set_autoload, remove_autoload dispatch correctly", async (t) => {
   const projectPath = await createGodotProject(t);
   const calls: Array<{ op: string; params: Record<string, unknown> }> = [];
@@ -74,7 +88,7 @@ test("get_project_settings, set_project_setting, list_autoloads, set_autoload, r
   );
   await listAutoloadsTool.execute({ project_path: projectPath }, executor);
   await setAutoloadTool.execute(
-    { project_path: projectPath, name: "Globals", path: "res://globals.gd" },
+    { project_path: projectPath, name: "Globals", path: "globals.gd" },
     executor
   );
   await removeAutoloadTool.execute({ project_path: projectPath, name: "Globals" }, executor);
@@ -102,6 +116,19 @@ test("set_autoload honors singleton=false", async (t) => {
     executor
   );
   assert.equal(received.singleton, false);
+});
+
+test("set_autoload rejects unsupported resource paths", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const executor = createMockGodotExecutor(async () => ({ success: true, output: "", data: { success: true } }));
+
+  await assert.rejects(
+    setAutoloadTool.execute(
+      { project_path: projectPath, name: "Bad", path: "res://data/config.tres" },
+      executor
+    ),
+    /path must end with .gd or .tscn or .scn/
+  );
 });
 
 test("list_input_actions dispatches with include_builtin flag", async (t) => {
@@ -173,9 +200,33 @@ test("list_export_presets returns empty when no config exists", async (t) => {
   assert.deepEqual(result.presets, []);
 });
 
+test("export_project normalizes relative output paths and rejects traversal", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const realProjectPath = await fs.realpath(projectPath);
+  const executor = createMockGodotExecutor(async () => ({ success: true, output: "" }));
+  let receivedArgs: string[] = [];
+  executor.executeRaw = async (args) => {
+    receivedArgs = args;
+    return { success: true, output: "" };
+  };
+
+  await exportProjectTool.execute(
+    { project_path: projectPath, preset: "Web", output_path: "builds/web/index.html" },
+    executor
+  );
+
+  assert.equal(receivedArgs[5], path.join(realProjectPath, "builds", "web", "index.html"));
+
+  await assert.rejects(
+    exportProjectTool.execute(
+      { project_path: projectPath, preset: "Web", output_path: "../outside.html" },
+      executor
+    ),
+    /output_path escapes project directory/
+  );
+});
+
 test("read_project_file reads a file inside the project and refuses traversal", async (t) => {
-  // import the tool here to keep the test self-contained
-  const { readProjectFileTool } = await import("../src/tools/build-tools.js");
   const projectPath = await createGodotProject(t);
   await fs.writeFile(path.join(projectPath, "notes.txt"), "hello\n", "utf-8");
 
@@ -192,5 +243,21 @@ test("read_project_file reads a file inside the project and refuses traversal", 
       null
     ),
     /escapes project directory|res:\/\//
+  );
+});
+
+test("read_project_file refuses symlinks that resolve outside the project", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const outsideDir = await createTempDir(t);
+  const outsideFile = path.join(outsideDir, "secret.txt");
+  await fs.writeFile(outsideFile, "secret", "utf-8");
+  await fs.symlink(outsideFile, path.join(projectPath, "linked-secret.txt"));
+
+  await assert.rejects(
+    readProjectFileTool.execute(
+      { project_path: projectPath, file_path: "linked-secret.txt" },
+      null
+    ),
+    /file_path escapes project directory/
   );
 });

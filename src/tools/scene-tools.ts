@@ -112,7 +112,12 @@ export const addNodeTool: ToolHandler = {
     const nodeType = args.node_type as string;
     const nodeName = args.node_name as string;
     const properties = (args.properties as Record<string, unknown>) || {};
-    const instanceScenePath = args.instance_scene_path as string | undefined;
+    const instanceScenePath = typeof args.instance_scene_path === "string" && args.instance_scene_path
+      ? normalizeResourcePath(args.instance_scene_path, {
+        fieldName: "instance_scene_path",
+        extensions: SCENE_EXTENSIONS,
+      })
+      : undefined;
 
     const result = await executor.execute(projectPath, "add_node", {
       scene_path: scenePath,

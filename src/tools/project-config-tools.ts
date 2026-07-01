@@ -2,6 +2,9 @@ import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import { executeGodotOperation } from "./godot-operation.js";
+import { normalizeResourcePath, SCENE_EXTENSIONS, SCRIPT_EXTENSIONS } from "./path-utils.js";
+
+const AUTOLOAD_EXTENSIONS = [...SCRIPT_EXTENSIONS, ...SCENE_EXTENSIONS] as const;
 
 // ClassDB Info Tool — Godot class introspection (methods, properties, signals, enums, etc.)
 export const getClassInfoTool: ToolHandler = {
@@ -75,7 +78,12 @@ export const checkScriptTool: ToolHandler = {
   async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
     const source = typeof args.source === "string" ? args.source : "";
-    const scriptPath = typeof args.script_path === "string" ? args.script_path : "";
+    const scriptPath = typeof args.script_path === "string" && args.script_path
+      ? normalizeResourcePath(args.script_path, {
+        fieldName: "script_path",
+        extensions: SCRIPT_EXTENSIONS,
+      })
+      : "";
 
     if (!source && !scriptPath) {
       throw new Error("Provide 'source' (inline GDScript) or 'script_path' (existing file) to validate.");
@@ -202,14 +210,17 @@ export const setAutoloadTool: ToolHandler = {
   async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
     const name = args.name as string;
-    const path = args.path as string;
+    const autoloadPath = normalizeResourcePath(args.path as string, {
+      fieldName: "path",
+      extensions: AUTOLOAD_EXTENSIONS,
+    });
     const singleton = args.singleton !== undefined ? Boolean(args.singleton) : true;
 
     return executeGodotOperation(
       executor,
       projectPath,
       "set_autoload",
-      { name, path, singleton },
+      { name, path: autoloadPath, singleton },
       "Failed to set autoload"
     );
   },

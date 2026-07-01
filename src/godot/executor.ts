@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { randomUUID } from "crypto";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
@@ -14,6 +15,7 @@ export interface ExecutionResult {
   output: string;
   error?: string;
   data?: unknown;
+  pid?: number;
 }
 
 interface BufferedProcessResult {
@@ -24,6 +26,26 @@ interface BufferedProcessResult {
   truncated: boolean;
   error?: string;
   timedOutAfterMs?: number;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractMarkedResult(stdout: string, resultToken: string): string | null {
+  const token = escapeRegExp(resultToken);
+  const markerPattern = new RegExp(
+    `\\[GODOT_MCP_RESULT:${token}\\]([\\s\\S]*?)\\[/GODOT_MCP_RESULT:${token}\\]`,
+    "g"
+  );
+  let match: RegExpExecArray | null;
+  let payload: string | null = null;
+
+  while ((match = markerPattern.exec(stdout)) !== null) {
+    payload = match[1];
+  }
+
+  return payload;
 }
 
 export class GodotExecutor {
@@ -45,11 +67,12 @@ export class GodotExecutor {
     params: Record<string, unknown> = {},
     timeoutMs?: number
   ): Promise<ExecutionResult> {
+    const resultToken = randomUUID();
     const args = [
       "--headless",
       "--path", projectPath,
       "-s", this.operationsScriptPath,
-      "--", operation, JSON.stringify(params),
+      "--", operation, JSON.stringify({ ...params, __mcp_result_token: resultToken }),
     ];
 
     const startedAt = Date.now();
@@ -87,11 +110,12 @@ export class GodotExecutor {
       };
     }
 
-    // Parse the output for our JSON result marker.
-    const resultMatch = processResult.stdout.match(/\[GODOT_MCP_RESULT\]([\s\S]*?)\[\/GODOT_MCP_RESULT\]/);
-    if (resultMatch) {
+    // Parse the nonce-scoped JSON result marker. This prevents user script
+    // stdout from spoofing operation results with a static marker string.
+    const resultPayload = extractMarkedResult(processResult.stdout, resultToken);
+    if (resultPayload) {
       try {
-        const result = JSON.parse(resultMatch[1].trim());
+        const result = JSON.parse(resultPayload.trim());
         const output = typeof result.output === "string"
           ? result.output
           : result.output !== undefined
@@ -247,6 +271,7 @@ export class GodotExecutor {
       try {
         proc = spawn(this.godotPath, args, {
           cwd,
+          detached: process.platform !== "win32",
           env: { ...process.env },
         });
       } catch (error) {
@@ -263,11 +288,11 @@ export class GodotExecutor {
 
       timeout = setTimeout(() => {
         timedOut = true;
-        proc.kill("SIGTERM");
+        this.killProcess(proc, "SIGTERM");
 
         setTimeout(() => {
           if (!settled) {
-            proc.kill("SIGKILL");
+            this.killProcess(proc, "SIGKILL");
           }
         }, 1_000).unref();
       }, effectiveTimeout);
@@ -290,9 +315,23 @@ export class GodotExecutor {
     });
   }
 
+  private killProcess(proc: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+    if (process.platform !== "win32" && proc.pid) {
+      try {
+        process.kill(-proc.pid, signal);
+        return;
+      } catch {
+        // Fall back to the direct child if process-group termination fails.
+      }
+    }
+
+    proc.kill(signal);
+  }
+
   private runDetached(args: string[], successMessage: string): Promise<ExecutionResult> {
     return new Promise((resolve) => {
       let settled = false;
+      let earlyExitTimer: NodeJS.Timeout | undefined;
 
       const finish = (result: ExecutionResult): void => {
         if (settled) {
@@ -300,6 +339,9 @@ export class GodotExecutor {
         }
 
         settled = true;
+        if (earlyExitTimer) {
+          clearTimeout(earlyExitTimer);
+        }
         resolve(result);
       };
 
@@ -315,12 +357,23 @@ export class GodotExecutor {
       }
 
       proc.once("spawn", () => {
-        proc.unref();
-        finish({ success: true, output: successMessage });
+        earlyExitTimer = setTimeout(() => {
+          proc.unref();
+          finish({ success: true, output: `${successMessage} (pid ${proc.pid})`, pid: proc.pid });
+        }, 750);
+      });
+
+      proc.once("exit", (code, signal) => {
+        finish({
+          success: false,
+          output: "",
+          error: `Godot process exited immediately${code === null ? "" : ` with code ${code}`}${signal ? ` (${signal})` : ""}`,
+          pid: proc.pid,
+        });
       });
 
       proc.once("error", (error) => {
-        finish({ success: false, output: "", error: error.message });
+        finish({ success: false, output: "", error: error.message, pid: proc.pid });
       });
     });
   }
