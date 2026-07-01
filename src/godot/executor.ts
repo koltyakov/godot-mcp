@@ -11,6 +11,7 @@ export interface ExecutionResult {
   success: boolean;
   output: string;
   error?: string;
+  data?: unknown;
 }
 
 interface BufferedProcessResult {
@@ -65,11 +66,23 @@ export class GodotExecutor {
     if (resultMatch) {
       try {
         const result = JSON.parse(resultMatch[1].trim());
-        return {
+        const output = typeof result.output === "string"
+          ? result.output
+          : result.output !== undefined
+            ? JSON.stringify(result.output)
+            : result.message ?? JSON.stringify(result);
+        const executionResult: ExecutionResult = {
           success: result.success ?? true,
-          output: result.output ?? result.message ?? JSON.stringify(result),
+          output,
           error: result.error,
         };
+
+        Object.defineProperty(executionResult, "data", {
+          value: result,
+          enumerable: false,
+        });
+
+        return executionResult;
       } catch {
         // Fall through to the raw process result for malformed marker output.
       }

@@ -2,6 +2,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import type { ExecutionResult, GodotExecutor } from "../src/godot/executor.js";
+
 type TestContextWithCleanup = {
   after: (fn: () => Promise<void> | void) => void;
 };
@@ -31,4 +33,17 @@ config/name="Test Project"
   const projectPath = await createTempDir(t);
   await writeText(path.join(projectPath, "project.godot"), projectFileContent);
   return projectPath;
+}
+
+export function createMockGodotExecutor(
+  handler: (projectPath: string, operation: string, params: Record<string, unknown>) => Promise<ExecutionResult> | ExecutionResult
+): GodotExecutor {
+  return {
+    execute: handler,
+    executeRaw: async () => ({ success: true, output: "" }),
+    launchEditor: async () => ({ success: true, output: "" }),
+    runProject: async () => ({ success: true, output: "" }),
+    getVersion: async () => "4.3.stable",
+    getGodotPath: () => "/mock/godot",
+  } as unknown as GodotExecutor;
 }

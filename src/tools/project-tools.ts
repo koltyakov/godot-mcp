@@ -1,7 +1,8 @@
 import type { ToolHandler } from "./types.js";
-import { findOpenGodotProjects, findSceneFiles, findScriptFiles } from "../godot/finder.js";
+import { findOpenGodotProjects } from "../godot/finder.js";
 import * as fs from "fs/promises";
 import * as path from "path";
+import { executeGodotOperation } from "./godot-operation.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import {
   normalizeAbsoluteProjectPath,
@@ -29,38 +30,7 @@ export const getProjectInfoTool: ToolHandler = {
   async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
 
-    // Read project.godot file directly for basic info even without Godot
-    const projectFile = path.join(projectPath, "project.godot");
-    const content = await fs.readFile(projectFile, "utf-8");
-    
-    const getConfigValue = (section: string, key: string): string | undefined => {
-      const regex = new RegExp(`\\[${section}\\][\\s\\S]*?${key}\\s*=\\s*"?([^"\\n]+)"?`, "m");
-      const match = content.match(regex);
-      return match?.[1];
-    };
-
-    const projectName = getConfigValue("application", "config/name") || "Unknown";
-    const mainScene = getConfigValue("application", "run/main_scene") || "";
-    
-    // Get scenes and scripts count
-    const scenes = await findSceneFiles(projectPath);
-    const scripts = await findScriptFiles(projectPath);
-
-    const result: Record<string, unknown> = {
-      project_name: projectName,
-      project_path: projectPath,
-      main_scene: mainScene,
-      scene_count: scenes.length,
-      script_count: scripts.length,
-    };
-
-    // If executor is available, get Godot version
-    if (executor) {
-      const version = await executor.getVersion();
-      result.godot_version = version;
-    }
-
-    return result;
+    return executeGodotOperation(executor, projectPath, "get_project_info", {}, "Failed to get project info");
   },
 };
 
@@ -77,16 +47,10 @@ export const listScenesTool: ToolHandler = {
       required: [],
     },
   },
-  async execute(args, _executor) {
+  async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
 
-    const scenes = await findSceneFiles(projectPath);
-
-    return {
-      project_path: projectPath,
-      scenes,
-      count: scenes.length,
-    };
+    return executeGodotOperation(executor, projectPath, "list_scenes", {}, "Failed to list scenes");
   },
 };
 
@@ -248,6 +212,49 @@ export const createResourceTool: ToolHandler = {
   },
 };
 
+// Run Godot Script Tool
+export const runGodotScriptTool: ToolHandler = {
+  definition: {
+    name: "run_godot_script",
+    description: "Run custom GDScript inside a Godot project and return its result",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...projectSelectorProperties,
+        script: {
+          type: "string",
+          description: "Full GDScript source. Define a method named by method, default run(params: Dictionary).",
+        },
+        method: {
+          type: "string",
+          description: "Method to call on the script instance",
+          default: "run",
+        },
+        parameters: {
+          type: "object",
+          description: "Dictionary passed as the only argument to the method",
+          additionalProperties: true,
+        },
+      },
+      required: ["script"],
+    },
+  },
+  async execute(args, executor) {
+    const projectPath = await resolveProjectPath(args);
+    const script = args.script as string;
+    const method = (args.method as string | undefined) || "run";
+    const parameters = (args.parameters as Record<string, unknown> | undefined) || {};
+
+    return executeGodotOperation(
+      executor,
+      projectPath,
+      "run_godot_script",
+      { script, method, parameters },
+      "Failed to run Godot script"
+    );
+  },
+};
+
 // Initialize Project Tool (creates project.godot)
 export const initProjectTool: ToolHandler = {
   definition: {
@@ -345,5 +352,6 @@ export const projectTools = [
   listOpenProjectsTool,
   getGodotVersionTool,
   createResourceTool,
+  runGodotScriptTool,
   initProjectTool,
 ];

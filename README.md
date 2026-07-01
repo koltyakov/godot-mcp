@@ -38,8 +38,11 @@ An MCP (Model Context Protocol) server that integrates Godot game engine with Co
 - **run_project** - Run the project
 - **get_godot_version** - Get Godot version info
 - **create_resource** - Create resource files (.tres)
+- **run_godot_script** - Run custom GDScript inside a project and return JSON-safe results
 
 Project-targeted tools accept `project_path`, but it is optional when Godot has an opened project. If exactly one open project is detected, the server uses it by default. If multiple projects are open, provide `project_name` or `project_path`; ambiguous requests report the available open projects so the client can ask which one to use.
+
+Most project content operations are executed by headless Godot through the bundled `godot_operations.gd` script, so scene/resource/script reads and writes use Godot's resource APIs instead of direct filesystem parsing where practical.
 
 ## Prerequisites
 

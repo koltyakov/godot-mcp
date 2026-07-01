@@ -49,8 +49,14 @@ func _execute_operation(operation: String, params: Dictionary) -> Dictionary:
 			return _list_nodes(params)
 		"create_script":
 			return _create_script(params)
+		"read_script":
+			return _read_script(params)
+		"edit_script":
+			return _edit_script(params)
 		"attach_script":
 			return _attach_script(params)
+		"run_godot_script":
+			return _run_godot_script(params)
 		"create_animation":
 			return _create_animation(params)
 		"add_animation_track":
@@ -346,6 +352,95 @@ func _create_script(params: Dictionary) -> Dictionary:
 	}
 
 
+func _read_script(params: Dictionary) -> Dictionary:
+	var script_path = params.get("script_path", "")
+	
+	if script_path.is_empty():
+		return {"success": false, "error": "script_path is required"}
+	
+	var file = FileAccess.open(script_path, FileAccess.READ)
+	if file == null:
+		return {"success": false, "error": "Failed to read script: " + script_path + " (" + str(FileAccess.get_open_error()) + ")"}
+	
+	var content = file.get_as_text()
+	file.close()
+	
+	return {
+		"success": true,
+		"script_path": script_path,
+		"content": content,
+		"line_count": content.split("\n").size()
+	}
+
+
+func _edit_script(params: Dictionary) -> Dictionary:
+	var script_path = params.get("script_path", "")
+	var content = params.get("content", "")
+	
+	if script_path.is_empty():
+		return {"success": false, "error": "script_path is required"}
+	
+	if not (content is String):
+		return {"success": false, "error": "content must be a string"}
+	
+	var dir_path = script_path.get_base_dir()
+	if not dir_path.is_empty():
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
+	
+	var file = FileAccess.open(script_path, FileAccess.WRITE)
+	if file == null:
+		return {"success": false, "error": "Failed to write script: " + script_path + " (" + str(FileAccess.get_open_error()) + ")"}
+	
+	file.store_string(content)
+	file.close()
+	
+	return {
+		"success": true,
+		"message": "Updated script at " + script_path,
+		"script_path": script_path
+	}
+
+
+func _run_godot_script(params: Dictionary) -> Dictionary:
+	var source = params.get("script", "")
+	var method = params.get("method", "run")
+	var parameters = params.get("parameters", {})
+	
+	if source.is_empty():
+		return {"success": false, "error": "script is required"}
+	
+	if method.is_empty():
+		return {"success": false, "error": "method is required"}
+	
+	if not (parameters is Dictionary):
+		return {"success": false, "error": "parameters must be a Dictionary"}
+	
+	var script = GDScript.new()
+	script.source_code = source
+	var reload_result = script.reload()
+	if reload_result != OK:
+		return {"success": false, "error": "Failed to compile script: " + str(reload_result)}
+	
+	var instance = script.new()
+	if instance == null:
+		return {"success": false, "error": "Failed to instantiate script"}
+	
+	if not instance.has_method(method):
+		if instance is Node:
+			instance.queue_free()
+		return {"success": false, "error": "Script does not define method: " + method}
+	
+	var value = instance.call(method, parameters)
+	if instance is Node:
+		instance.queue_free()
+	
+	return {
+		"success": true,
+		"method": method,
+		"result": _to_json_safe(value)
+	}
+
+
 func _attach_script(params: Dictionary) -> Dictionary:
 	var scene_path = params.get("scene_path", "")
 	var node_path = params.get("node_path", ".")
@@ -596,28 +691,79 @@ func _get_project_info(params: Dictionary) -> Dictionary:
 	if err != OK:
 		return {"success": false, "error": "Failed to load project.godot"}
 	
+	var scenes = []
+	_scan_for_files("res://", [".tscn", ".scn"], scenes)
+	var scripts = []
+	_scan_for_files("res://", [".gd"], scripts)
+	var version_info = Engine.get_version_info()
+	
 	return {
 		"success": true,
 		"project_name": config.get_value("application", "config/name", "Unknown"),
 		"main_scene": config.get_value("application", "run/main_scene", ""),
-		"godot_version": Engine.get_version_info(),
-		"project_path": ProjectSettings.globalize_path("res://")
+		"godot_version": version_info.get("string", str(version_info)),
+		"project_path": _project_root_path(),
+		"scene_count": scenes.size(),
+		"script_count": scripts.size()
 	}
 
 
 func _list_scenes(params: Dictionary) -> Dictionary:
 	var scenes = []
 	_scan_for_files("res://", [".tscn", ".scn"], scenes)
-	return {"success": true, "scenes": scenes}
+	return {"success": true, "project_path": _project_root_path(), "scenes": scenes, "count": scenes.size()}
 
 
 func _list_scripts(params: Dictionary) -> Dictionary:
 	var scripts = []
 	_scan_for_files("res://", [".gd"], scripts)
-	return {"success": true, "scripts": scripts}
+	return {"success": true, "project_path": _project_root_path(), "scripts": scripts, "count": scripts.size()}
 
 
 # ============== Helper Functions ==============
+
+func _project_root_path() -> String:
+	var project_path = ProjectSettings.globalize_path("res://")
+	while project_path.ends_with("/") or project_path.ends_with("\\"):
+		project_path = project_path.substr(0, project_path.length() - 1)
+	return project_path
+
+
+func _to_json_safe(value, depth: int = 0):
+	if depth > 8:
+		return str(value)
+	
+	match typeof(value):
+		TYPE_NIL, TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING:
+			return value
+		TYPE_VECTOR2:
+			return {"_type": "Vector2", "x": value.x, "y": value.y}
+		TYPE_VECTOR3:
+			return {"_type": "Vector3", "x": value.x, "y": value.y, "z": value.z}
+		TYPE_COLOR:
+			return {"_type": "Color", "r": value.r, "g": value.g, "b": value.b, "a": value.a}
+		TYPE_RECT2:
+			return {"_type": "Rect2", "x": value.position.x, "y": value.position.y, "w": value.size.x, "h": value.size.y}
+		TYPE_ARRAY:
+			var array_result = []
+			for item in value:
+				array_result.append(_to_json_safe(item, depth + 1))
+			return array_result
+		TYPE_DICTIONARY:
+			var dictionary_result = {}
+			for key in value:
+				dictionary_result[str(key)] = _to_json_safe(value[key], depth + 1)
+			return dictionary_result
+		TYPE_OBJECT:
+			if value == null:
+				return null
+			if value is Node:
+				return {"_type": value.get_class(), "name": value.name, "path": str(value.get_path())}
+			if value is Resource:
+				return {"_type": value.get_class(), "resource_path": value.resource_path}
+			return str(value)
+		_:
+			return str(value)
 
 func _create_node_of_type(type_name: String) -> Node:
 	match type_name:

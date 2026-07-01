@@ -1,11 +1,8 @@
 import type { ToolHandler } from "./types.js";
-import { findScriptFiles } from "../godot/finder.js";
-import * as fs from "fs/promises";
+import { executeGodotOperation } from "./godot-operation.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import {
   normalizeResourcePath,
-  resolveExistingProjectFilePath,
-  resolveWritableProjectFilePath,
   SCENE_EXTENSIONS,
   SCRIPT_EXTENSIONS,
 } from "./path-utils.js";
@@ -133,7 +130,7 @@ export const attachScriptTool: ToolHandler = {
   },
 };
 
-// Read Script Tool (direct file read, doesn't need Godot)
+// Read Script Tool
 export const readScriptTool: ToolHandler = {
   definition: {
     name: "read_script",
@@ -150,31 +147,24 @@ export const readScriptTool: ToolHandler = {
       required: ["script_path"],
     },
   },
-  async execute(args, _executor) {
+  async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
+    const scriptPath = normalizeResourcePath(args.script_path as string, {
+      fieldName: "script_path",
+      extensions: SCRIPT_EXTENSIONS,
+    });
 
-    try {
-      const { fsPath, resourcePath: scriptPath } = await resolveExistingProjectFilePath(
-        projectPath,
-        args.script_path as string,
-        {
-          fieldName: "script_path",
-          extensions: SCRIPT_EXTENSIONS,
-        }
-      );
-      const content = await fs.readFile(fsPath, "utf-8");
-      return {
-        script_path: scriptPath,
-        content,
-        line_count: content.split("\n").length,
-      };
-    } catch (error) {
-      throw new Error(`Failed to read script: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    return executeGodotOperation(
+      executor,
+      projectPath,
+      "read_script",
+      { script_path: scriptPath },
+      "Failed to read script"
+    );
   },
 };
 
-// Edit Script Tool (direct file write)
+// Edit Script Tool
 export const editScriptTool: ToolHandler = {
   definition: {
     name: "edit_script",
@@ -195,29 +185,22 @@ export const editScriptTool: ToolHandler = {
       required: ["script_path", "content"],
     },
   },
-  async execute(args, _executor) {
+  async execute(args, executor) {
     const content = args.content as string;
 
     const projectPath = await resolveProjectPath(args);
-    const { fsPath, resourcePath: scriptPath } = await resolveWritableProjectFilePath(
-      projectPath,
-      args.script_path as string,
-      {
-        fieldName: "script_path",
-        extensions: SCRIPT_EXTENSIONS,
-      }
-    );
+    const scriptPath = normalizeResourcePath(args.script_path as string, {
+      fieldName: "script_path",
+      extensions: SCRIPT_EXTENSIONS,
+    });
 
-    try {
-      await fs.writeFile(fsPath, content, "utf-8");
-      return {
-        success: true,
-        message: `Updated script at ${scriptPath}`,
-        script_path: scriptPath,
-      };
-    } catch (error) {
-      throw new Error(`Failed to edit script: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    return executeGodotOperation(
+      executor,
+      projectPath,
+      "edit_script",
+      { script_path: scriptPath, content },
+      "Failed to edit script"
+    );
   },
 };
 
@@ -234,15 +217,10 @@ export const listScriptsTool: ToolHandler = {
       required: [],
     },
   },
-  async execute(args, _executor) {
+  async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
-    const scripts = await findScriptFiles(projectPath);
 
-    return {
-      project_path: projectPath,
-      scripts,
-      count: scripts.length,
-    };
+    return executeGodotOperation(executor, projectPath, "list_scripts", {}, "Failed to list scripts");
   },
 };
 

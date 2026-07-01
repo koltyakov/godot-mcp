@@ -3,9 +3,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
-import type { GodotExecutor } from "../src/godot/executor.js";
 import { getProjectInfoTool, initProjectTool, listScenesTool } from "../src/tools/project-tools.js";
-import { createGodotProject, createTempDir, writeText } from "./helpers.js";
+import { createGodotProject, createMockGodotExecutor, createTempDir, writeText } from "./helpers.js";
 
 test("initProjectTool creates a project file and standard directories", async (t) => {
   const dir = await createTempDir(t);
@@ -63,7 +62,7 @@ test("initProjectTool rejects unsupported renderers and existing projects", asyn
   );
 });
 
-test("getProjectInfoTool reads project metadata and counts scenes/scripts", async (t) => {
+test("getProjectInfoTool reads project metadata and counts scenes/scripts through Godot", async (t) => {
   const projectPath = await createGodotProject(
     t,
     `config_version=5
@@ -78,15 +77,32 @@ run/main_scene="res://scenes/main.tscn"
   await writeText(path.join(projectPath, "scenes", "other.scn"));
   await writeText(path.join(projectPath, "scripts", "player.gd"));
   await writeText(path.join(projectPath, "addons", "ignored.gd"));
-
-  const executor = {
-    getVersion: async () => "4.3.stable",
-  } as GodotExecutor;
-
-  const result = await getProjectInfoTool.execute({ project_path: projectPath }, executor);
   const realProjectPath = await fs.realpath(projectPath);
 
+  const executor = createMockGodotExecutor(async (receivedProjectPath, operation, params) => {
+    assert.equal(receivedProjectPath, realProjectPath);
+    assert.equal(operation, "get_project_info");
+    assert.deepEqual(params, {});
+
+    return {
+      success: true,
+      output: "",
+      data: {
+        success: true,
+        project_name: "Demo Project",
+        project_path: realProjectPath,
+        main_scene: "res://scenes/main.tscn",
+        scene_count: 2,
+        script_count: 1,
+        godot_version: "4.3.stable",
+      },
+    };
+  });
+
+  const result = await getProjectInfoTool.execute({ project_path: projectPath }, executor);
+
   assert.deepEqual(result, {
+    success: true,
     project_name: "Demo Project",
     project_path: realProjectPath,
     main_scene: "res://scenes/main.tscn",
@@ -96,14 +112,32 @@ run/main_scene="res://scenes/main.tscn"
   });
 });
 
-test("listScenesTool lists scenes without requiring a Godot executor", async (t) => {
+test("listScenesTool lists scenes through Godot", async (t) => {
   const projectPath = await createGodotProject(t);
   await writeText(path.join(projectPath, "scenes", "main.tscn"));
-
-  const result = await listScenesTool.execute({ project_path: projectPath }, null);
   const realProjectPath = await fs.realpath(projectPath);
 
+  const executor = createMockGodotExecutor(async (receivedProjectPath, operation, params) => {
+    assert.equal(receivedProjectPath, realProjectPath);
+    assert.equal(operation, "list_scenes");
+    assert.deepEqual(params, {});
+
+    return {
+      success: true,
+      output: "",
+      data: {
+        success: true,
+        project_path: realProjectPath,
+        scenes: ["res://scenes/main.tscn"],
+        count: 1,
+      },
+    };
+  });
+
+  const result = await listScenesTool.execute({ project_path: projectPath }, executor);
+
   assert.deepEqual(result, {
+    success: true,
     project_path: realProjectPath,
     scenes: ["res://scenes/main.tscn"],
     count: 1,
