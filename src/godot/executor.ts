@@ -23,6 +23,7 @@ interface BufferedProcessResult {
   timedOut: boolean;
   truncated: boolean;
   error?: string;
+  timedOutAfterMs?: number;
 }
 
 export class GodotExecutor {
@@ -41,7 +42,8 @@ export class GodotExecutor {
   async execute(
     projectPath: string,
     operation: string,
-    params: Record<string, unknown> = {}
+    params: Record<string, unknown> = {},
+    timeoutMs?: number
   ): Promise<ExecutionResult> {
     const args = [
       "--headless",
@@ -57,7 +59,7 @@ export class GodotExecutor {
       project_path: projectPath,
     });
 
-    const processResult = await this.runBuffered(args, projectPath);
+    const processResult = await this.runBuffered(args, projectPath, timeoutMs);
     const durationMs = Date.now() - startedAt;
 
     if (processResult.error) {
@@ -71,16 +73,17 @@ export class GodotExecutor {
     }
 
     if (processResult.timedOut) {
+      const timeoutMs = processResult.timedOutAfterMs ?? DEFAULT_TIMEOUT_MS;
       await log("error", "godot-mcp", {
         message: "Godot operation timed out",
         operation,
         project_path: projectPath,
-        timeout_ms: DEFAULT_TIMEOUT_MS,
+        timeout_ms: timeoutMs,
       });
       return {
         success: false,
         output: processResult.stdout.trim(),
-        error: `Godot operation timed out after ${DEFAULT_TIMEOUT_MS}ms`,
+        error: `Godot operation timed out after ${timeoutMs}ms`,
       };
     }
 
@@ -157,17 +160,18 @@ export class GodotExecutor {
   /**
    * Execute a raw Godot command without the operations script
    */
-  async executeRaw(args: string[], cwd?: string): Promise<ExecutionResult> {
-    const processResult = await this.runBuffered(args, cwd);
+  async executeRaw(args: string[], cwd?: string, timeoutMs?: number): Promise<ExecutionResult> {
+    const processResult = await this.runBuffered(args, cwd, timeoutMs);
     if (processResult.error) {
       return { success: false, output: processResult.stdout.trim(), error: processResult.error };
     }
 
     if (processResult.timedOut) {
+      const timeoutMs = processResult.timedOutAfterMs ?? DEFAULT_TIMEOUT_MS;
       return {
         success: false,
         output: processResult.stdout.trim(),
-        error: `Godot command timed out after ${DEFAULT_TIMEOUT_MS}ms`,
+        error: `Godot command timed out after ${timeoutMs}ms`,
       };
     }
 
@@ -207,7 +211,8 @@ export class GodotExecutor {
     return this.godotPath;
   }
 
-  private runBuffered(args: string[], cwd?: string): Promise<BufferedProcessResult> {
+  private runBuffered(args: string[], cwd?: string, timeoutMs?: number): Promise<BufferedProcessResult> {
+    const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
     return new Promise((resolve) => {
       let stdout = "";
       let stderr = "";
@@ -265,7 +270,7 @@ export class GodotExecutor {
             proc.kill("SIGKILL");
           }
         }, 1_000).unref();
-      }, DEFAULT_TIMEOUT_MS);
+      }, effectiveTimeout);
 
       proc.stdout?.on("data", (data: Buffer) => {
         stdout = appendOutput(stdout, data);
@@ -276,7 +281,7 @@ export class GodotExecutor {
       });
 
       proc.on("close", (code) => {
-        finish({ code, stdout, stderr, timedOut, truncated });
+        finish({ code, stdout, stderr, timedOut, truncated, timedOutAfterMs: timedOut ? effectiveTimeout : undefined });
       });
 
       proc.on("error", (error) => {

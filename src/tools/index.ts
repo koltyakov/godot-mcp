@@ -3,16 +3,24 @@ import type { GodotExecutor } from "../godot/executor.js";
 import { notifyResourcesChanged } from "../notifications.js";
 
 import { sceneTools } from "./scene-tools.js";
+import { sceneExtTools } from "./scene-ext-tools.js";
 import { scriptTools } from "./script-tools.js";
 import { animationTools } from "./animation-tools.js";
 import { projectTools } from "./project-tools.js";
+import { projectConfigTools } from "./project-config-tools.js";
+import { buildTools } from "./build-tools.js";
+import { dependencyTools } from "./dependency-tools.js";
 
 // Combine all tools
 const allTools: ToolHandler[] = [
   ...sceneTools,
+  ...sceneExtTools,
   ...scriptTools,
   ...animationTools,
   ...projectTools,
+  ...projectConfigTools,
+  ...buildTools,
+  ...dependencyTools,
 ];
 
 // Create a map for quick lookup

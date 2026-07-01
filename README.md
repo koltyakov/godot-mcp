@@ -13,11 +13,14 @@ The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are 
 ### Scene Management
 
 - **create_scene** - Create new Godot scenes (.tscn) with specified root node types
-- **add_node** - Add nodes to existing scenes
+- **add_node** - Add nodes to existing scenes (supports instancing child scenes via `instance_scene_path`)
 - **remove_node** - Remove nodes from scenes
 - **modify_node** - Modify node properties
-- **read_scene** - Read scene structure as JSON
+- **read_scene** - Read scene structure as JSON (includes groups, metadata, signal connections, and stored properties)
 - **list_nodes** - List all nodes in a scene
+- **add_node_group** / **remove_node_group** - Manage persistent node groups
+- **set_node_meta** / **remove_node_meta** - Set/remove node metadata
+- **connect_signal** / **disconnect_signal** - Wire signals between nodes (persisted with the scene)
 
 ### Script Generation
 
@@ -26,11 +29,12 @@ The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are 
 - **read_script** - Read script file contents
 - **edit_script** - Edit existing scripts
 - **list_scripts** - List all scripts in project
+- **check_script** - Compile-check GDScript source without saving (returns errors/warnings with line+column)
 
 ### Animation
 
 - **create_animation** - Create AnimationPlayer with animations
-- **add_animation_track** - Add animation tracks with keyframes
+- **add_animation_track** - Add animation tracks with keyframes. Supports all Godot track types: `value`, `position_3d`, `rotation_3d`, `scale_3d`, `blend_shape`, `method`, `bezier`, `audio`, `animation`
 
 ### Project Management
 
@@ -43,6 +47,23 @@ The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are 
 - **get_godot_version** - Get Godot version info
 - **create_resource** - Create resource files (.tres)
 - **run_godot_script** - Run custom GDScript inside a project and return JSON-safe results
+
+### Project Configuration & Introspection
+
+- **get_class_info** - Introspect any Godot class via ClassDB (methods, properties, signals, enums, constants, default values, inheritance chain). Without a class name, lists all known classes.
+- **get_project_settings** / **set_project_setting** - Read/write any section/key in `project.godot`
+- **list_autoloads** / **set_autoload** / **remove_autoload** - Manage autoload singletons
+- **list_input_actions** - List InputMap actions with bound events (keys, buttons, joypad)
+
+### Build & Dependency Analysis
+
+- **list_export_presets** - Parse `export_presets.cfg` (no Godot spawn)
+- **export_project** - Run `godot --headless --export-release` for a preset (10-minute timeout)
+- **upgrade_project** - Run `godot --headless --upgrade` + `--import` to migrate to the current engine version
+- **read_project_file** - Read any text file inside the project root
+- **get_dependency_graph** - Forward + reverse dependency graph across scenes/scripts/resources/shaders (pure filesystem scan, no Godot spawn)
+- **find_usages** - Reverse dependency lookup: "what references `res://foo.gd`?"
+- **list_project_files** - List tracked assets by kind
 
 Project-targeted tools accept `project_path`, but it is optional when Godot has an opened project. If exactly one open project is detected, the server uses it by default. If multiple projects are open, provide `project_name` or `project_path`; ambiguous requests report the available open projects so the client can ask which one to use.
 

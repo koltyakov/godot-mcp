@@ -78,15 +78,19 @@ export const addNodeTool: ToolHandler = {
         },
         node_type: {
           type: "string",
-          description: "Type of node to add (e.g., 'Sprite2D', 'Camera2D', 'CollisionShape2D')",
+          description: "Type of node to add (e.g., 'Sprite2D', 'Camera2D', 'CollisionShape2D'). Ignored when instance_scene_path is provided.",
         },
         node_name: {
           type: "string",
           description: "Name for the new node",
         },
+        instance_scene_path: {
+          type: "string",
+          description: "Optional res:// path to a scene (.tscn/.scn) to instantiate as a child instead of node_type. Useful for composing scenes.",
+        },
         properties: {
           type: "object",
-          description: "Optional properties to set on the node",
+          description: "Optional properties to set on the node. For Vector2/Vector3/Color use {_type:'Vector2',x,y}. For Resource-typed properties (material, mesh, shape, etc.) use {_type:'Resource', path:'res://foo.tres'}.",
           additionalProperties: true,
         },
       },
@@ -108,6 +112,7 @@ export const addNodeTool: ToolHandler = {
     const nodeType = args.node_type as string;
     const nodeName = args.node_name as string;
     const properties = (args.properties as Record<string, unknown>) || {};
+    const instanceScenePath = args.instance_scene_path as string | undefined;
 
     const result = await executor.execute(projectPath, "add_node", {
       scene_path: scenePath,
@@ -115,6 +120,7 @@ export const addNodeTool: ToolHandler = {
       node_type: nodeType,
       node_name: nodeName,
       properties,
+      ...(instanceScenePath ? { instance_scene_path: instanceScenePath } : {}),
     });
 
     if (!result.success) {

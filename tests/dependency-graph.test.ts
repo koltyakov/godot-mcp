@@ -1,0 +1,151 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { buildDependencyReport, findUsages } from "../src/dependency-graph.js";
+import { createGodotProject, createTempDir, writeText } from "./helpers.js";
+
+test("buildDependencyReport scans scenes/scripts/resources/shaders and classifies them", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(`${projectPath}/scenes/main.tscn`, `[gd_scene format=3]\n`);
+  await writeText(`${projectPath}/scenes/player.tscn`, `[gd_scene format=3]\n`);
+  await writeText(`${projectPath}/scripts/player.gd`, `extends Node\n`);
+  await writeText(`${projectPath}/resources/health.tres`, `[gd_resource type="Resource"]\n`);
+  await writeText(`${projectPath}/shaders/water.gdshader`, `shader_type canvas_item;\n`);
+  // Should be ignored:
+  await writeText(`${projectPath}/addons/ignored/should_be_ignored.tscn`, `[gd_scene]\n`);
+  await writeText(`${projectPath}/.godot/also_ignored.gd`, `extends Node\n`);
+  await writeText(`${projectPath}/notes.txt`, `irrelevant\n`);
+
+  const report = await buildDependencyReport({ project_path: projectPath });
+
+  assert.equal(report.counts.scenes, 2);
+  assert.equal(report.counts.scripts, 1);
+  assert.equal(report.counts.resources, 1);
+  assert.equal(report.counts.shaders, 1);
+  assert.equal(report.counts.other, 0);
+
+  for (const p of Object.keys(report.nodes)) {
+    assert.ok(p.startsWith("res://"), `node ${p} should be a res:// path`);
+  }
+});
+
+test("buildDependencyReport extracts ext_resource references from scenes and resources", async (t) => {
+  const projectPath = await createGodotProject(t);
+  // main.tscn depends on player.tscn and player.gd
+  await writeText(
+    `${projectPath}/scenes/main.tscn`,
+    [
+      `[gd_scene load_steps=3 format=3]`,
+      `[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="1"]`,
+      `[ext_resource type="Script" path="res://scripts/player.gd" id="2"]`,
+      `[node name="Root" type="Node2D"]`,
+    ].join("\n") + "\n"
+  );
+  await writeText(`${projectPath}/scenes/player.tscn`, `[gd_scene format=3]\n[node name="Player" type="Node2D"]\n`);
+  await writeText(`${projectPath}/scripts/player.gd`, `extends Node2D\n`);
+  await writeText(
+    `${projectPath}/resources/health.tres`,
+    `[gd_resource type="Resource"]\n[resource]\nscript = ExtResource("1")\n`
+  );
+
+  const report = await buildDependencyReport({ project_path: projectPath });
+
+  const main = report.nodes["res://scenes/main.tscn"];
+  assert.ok(main, "main.tscn should be in the graph");
+  assert.ok(
+    main.dependsOn.includes("res://scenes/player.tscn"),
+    `main.tscn depends on player.tscn; got ${JSON.stringify(main.dependsOn)}`
+  );
+  assert.ok(
+    main.dependsOn.includes("res://scripts/player.gd"),
+    `main.tscn depends on player.gd; got ${JSON.stringify(main.dependsOn)}`
+  );
+
+  // Reverse references should populate referencedBy.
+  const player = report.nodes["res://scenes/player.tscn"];
+  assert.deepEqual(player.referencedBy, ["res://scenes/main.tscn"]);
+  const script = report.nodes["res://scripts/player.gd"];
+  assert.deepEqual(script.referencedBy, ["res://scenes/main.tscn"]);
+});
+
+test("buildDependencyReport extracts load()/preload() references from scripts and surfaces class_name", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(
+    `${projectPath}/scripts/inventory.gd`,
+    [
+      `class_name Inventory`,
+      `extends Node`,
+      ``,
+      `const DEFAULT_ITEM := preload("res://resources/default_item.tres")`,
+      ``,
+      `func add(path: String) -> void:`,
+      `    var res = load("res://resources/health.tres")`,
+      `    var scene = load("res://scenes/item.tscn")`,
+    ].join("\n") + "\n"
+  );
+  await writeText(`${projectPath}/resources/default_item.tres`, `[gd_resource type="Resource"]\n`);
+  await writeText(`${projectPath}/resources/health.tres`, `[gd_resource type="Resource"]\n`);
+  await writeText(`${projectPath}/scenes/item.tscn`, `[gd_scene format=3]\n`);
+
+  const report = await buildDependencyReport({ project_path: projectPath });
+
+  const inv = report.nodes["res://scripts/inventory.gd"];
+  assert.equal(inv.className, "Inventory");
+  assert.ok(inv.dependsOn.includes("res://resources/default_item.tres"));
+  assert.ok(inv.dependsOn.includes("res://resources/health.tres"));
+  assert.ok(inv.dependsOn.includes("res://scenes/item.tscn"));
+});
+
+test("orphans list contains assets with no inbound references", async (t) => {
+  const projectPath = await createGodotProject(t);
+  // a.gd references b.gd; c.gd references nothing and is referenced by nothing.
+  await writeText(`${projectPath}/scripts/a.gd`, `extends Node\nvar b = preload("res://scripts/b.gd")\n`);
+  await writeText(`${projectPath}/scripts/b.gd`, `extends Node\n`);
+  await writeText(`${projectPath}/scripts/c.gd`, `extends Node\n`);
+
+  const report = await buildDependencyReport({ project_path: projectPath });
+
+  // a.gd and c.gd have no inbound refs; b.gd does.
+  assert.ok(report.orphans.includes("res://scripts/a.gd"));
+  assert.ok(report.orphans.includes("res://scripts/c.gd"));
+  assert.ok(!report.orphans.includes("res://scripts/b.gd"));
+});
+
+test("findUsages returns the reverse-reference list for a given target", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(
+    `${projectPath}/scenes/level1.tscn`,
+    `[ext_resource type="PackedScene" path="res://scenes/enemy.tscn" id="1"]\n`
+  );
+  await writeText(
+    `${projectPath}/scenes/level2.tscn`,
+    `[ext_resource type="PackedScene" path="res://scenes/enemy.tscn" id="1"]\n`
+  );
+  await writeText(`${projectPath}/scenes/enemy.tscn`, `[gd_scene]\n`);
+
+  const report = await buildDependencyReport({ project_path: projectPath });
+  const usages = findUsages(report, "res://scenes/enemy.tscn");
+  assert.equal(usages.exists, true);
+  assert.deepEqual(usages.referencedBy.sort(), ["res://scenes/level1.tscn", "res://scenes/level2.tscn"]);
+});
+
+test("findUsages normalizes a relative target path to res://", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(
+    `${projectPath}/scenes/level.tscn`,
+    `[ext_resource type="PackedScene" path="res://scenes/enemy.tscn" id="1"]\n`
+  );
+  await writeText(`${projectPath}/scenes/enemy.tscn`, `[gd_scene]\n`);
+
+  const report = await buildDependencyReport({ project_path: projectPath });
+  const usages = findUsages(report, "scenes/enemy.tscn");
+  assert.equal(usages.target, "res://scenes/enemy.tscn");
+  assert.deepEqual(usages.referencedBy, ["res://scenes/level.tscn"]);
+});
+
+test("buildDependencyReport handles a project with no assets", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const report = await buildDependencyReport({ project_path: projectPath });
+  assert.deepEqual(report.counts, { scenes: 0, scripts: 0, resources: 0, shaders: 0, other: 0 });
+  assert.deepEqual(report.orphans, []);
+});
