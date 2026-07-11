@@ -48,6 +48,14 @@ export async function resolveProjectPath(
   args: Record<string, unknown>,
   openProjectProvider: OpenProjectProvider = findOpenGodotProjects
 ): Promise<string> {
+  const suppliedSelectors = ["project_id", "project_path", "project_name"].filter((key) => {
+    const value = args[key];
+    return value !== undefined && value !== null && (typeof value !== "string" || value.trim() !== "");
+  });
+  if (suppliedSelectors.length > 1) {
+    throw new Error(`Provide only one project selector, not: ${suppliedSelectors.join(", ")}`);
+  }
+
   const projectId = args.project_id;
   if (projectId !== undefined && projectId !== null) {
     if (typeof projectId !== "string" || projectId.trim() === "") {

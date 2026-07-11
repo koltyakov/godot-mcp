@@ -94,7 +94,13 @@ export async function executeTool(
     const scenePath = normalizedScenePath
       ? await canonicalizeProspectivePath(path.resolve(projectPath, normalizedScenePath.slice("res://".length)))
       : undefined;
-    const unscheduledOperation = operation;
+    // Once admitted, mutations run to completion so cancellation cannot kill
+    // Godot during an on-disk commit. The scheduler still removes cancelled
+    // requests while they are queued.
+    const unscheduledOperation = () => runWithExecutionContext(
+      { ...options, signal: undefined },
+      () => tool.execute(executionArgs, executor)
+    );
     operation = () => mutationScheduler.run(
       { projectPath, scenePath },
       options.signal,

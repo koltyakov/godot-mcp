@@ -35,6 +35,9 @@ export const readResourceTool: ToolHandler = {
   async execute(args, executor) {
     const projectPath = await resolveProjectPath(args);
     const resourcePath = normalizeResourcePath(args.resource_path as string, { fieldName: "resource_path", extensions: RESOURCE_EXTENSIONS });
+    const requestedPath = getProjectFilePath(projectPath, resourcePath, { fieldName: "resource_path", extensions: RESOURCE_EXTENSIONS });
+    if ((await fs.lstat(requestedPath)).isSymbolicLink()) throw new Error(`resource_path must not be a symbolic link: ${resourcePath}`);
+    await resolveExistingProjectFilePath(projectPath, resourcePath, { fieldName: "resource_path", extensions: RESOURCE_EXTENSIONS });
     return executeGodotOperation(executor, projectPath, "read_resource", { resource_path: resourcePath }, "Failed to read resource");
   },
 };
@@ -59,6 +62,9 @@ export const updateResourceTool: ToolHandler = {
     const resourcePath = normalizeResourcePath(args.resource_path as string, { fieldName: "resource_path", extensions: RESOURCE_EXTENSIONS });
     const properties = args.properties as Record<string, unknown>;
     if (!properties || Object.keys(properties).length === 0) throw new Error("properties must be a non-empty object");
+    const requestedPath = getProjectFilePath(projectPath, resourcePath, { fieldName: "resource_path", extensions: RESOURCE_EXTENSIONS });
+    if ((await fs.lstat(requestedPath)).isSymbolicLink()) throw new Error(`resource_path must not be a symbolic link: ${resourcePath}`);
+    await resolveExistingProjectFilePath(projectPath, resourcePath, { fieldName: "resource_path", extensions: RESOURCE_EXTENSIONS });
     return executeGodotOperation(executor, projectPath, "update_resource", { resource_path: resourcePath, properties }, "Failed to update resource");
   },
 };

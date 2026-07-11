@@ -26,6 +26,15 @@ test("resolveProjectPath accepts a registered stable project ID", async (t) => {
   await assert.rejects(resolveProjectPath({ project_id: "missing" }, async () => []), /Unknown project_id/);
 });
 
+test("resolveProjectPath rejects conflicting selectors", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const project = await registerProject(projectPath);
+  await assert.rejects(
+    resolveProjectPath({ project_id: project.project_id, project_path: projectPath }, async () => []),
+    /Provide only one project selector/
+  );
+});
+
 test("resolveProjectPath uses the only open project by default", async (t) => {
   const projectPath = await createGodotProject(t);
 
