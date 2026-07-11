@@ -3,7 +3,12 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
-import { getProjectInfoTool, initProjectTool, listScenesTool } from "../src/tools/project-tools.js";
+import {
+  getProjectInfoTool,
+  initProjectTool,
+  listScenesTool,
+  runProjectDiagnosticsTool,
+} from "../src/tools/project-tools.js";
 import { createGodotProject, createMockGodotExecutor, createTempDir, writeText } from "./helpers.js";
 
 test("initProjectTool creates a project file and standard directories", async (t) => {
@@ -142,4 +147,67 @@ test("listScenesTool lists scenes through Godot", async (t) => {
     scenes: ["res://scenes/main.tscn"],
     count: 1,
   });
+});
+
+test("runProjectDiagnosticsTool returns parsed runtime diagnostics", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const realProjectPath = await fs.realpath(projectPath);
+  let receivedPath = "";
+  let receivedOptions: Record<string, unknown> = {};
+  const executor = createMockGodotExecutor(
+    async () => ({ success: true, output: "" }),
+    {
+      runProjectDiagnostics: async (pathValue, options) => {
+        receivedPath = pathValue;
+        receivedOptions = options;
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: "Godot Engine\nSCRIPT ERROR: Invalid access to property 'health'\n  at: Player._ready (res://scripts/player.gd:42)",
+          stderr: "",
+          timedOut: false,
+          truncated: false,
+          durationMs: 125,
+        };
+      },
+    }
+  );
+
+  const result = await runProjectDiagnosticsTool.execute(
+    {
+      project_path: projectPath,
+      scene_path: "scenes/main.tscn",
+      frames: 30,
+      fixed_fps: 60,
+      timeout_ms: 5000,
+    },
+    executor
+  ) as Record<string, unknown>;
+
+  assert.equal(receivedPath, realProjectPath);
+  assert.deepEqual(receivedOptions, {
+    scenePath: "res://scenes/main.tscn",
+    frames: 30,
+    fixedFps: 60,
+    debug: true,
+    timeoutMs: 5000,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.exit_code, 0);
+  assert.deepEqual(result.diagnostics, [{
+    severity: "error",
+    message: "Invalid access to property 'health'",
+    file: "res://scripts/player.gd",
+    line: 42,
+  }]);
+});
+
+test("runProjectDiagnosticsTool validates execution bounds", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const executor = createMockGodotExecutor(async () => ({ success: true, output: "" }));
+
+  await assert.rejects(
+    runProjectDiagnosticsTool.execute({ project_path: projectPath, frames: 0 }, executor),
+    /frames must be an integer between 1 and 3600/
+  );
 });

@@ -30,14 +30,13 @@ for (const tool of allTools) {
 }
 
 /**
- * A tool is considered to mutate project contents when it is annotated
- * destructive (writes files) or open-world (e.g. runs arbitrary code
- * that may touch the project). Read-only tools do not trigger resource
- * list-changed notifications.
+ * Destructive tools and handlers explicitly marked as potential mutators
+ * may change project contents. Open-world status alone (for example,
+ * launching the editor) does not force clients to rescan resources.
  */
 function toolMutatesProject(tool: ToolHandler): boolean {
   const annotations = tool.definition.annotations;
-  return Boolean(annotations?.destructiveHint || annotations?.openWorldHint);
+  return Boolean(tool.mayMutateProject || annotations?.destructiveHint);
 }
 
 /**

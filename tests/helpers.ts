@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { ExecutionResult, GodotExecutor } from "../src/godot/executor.js";
+import type { CommandExecutionResult, ExecutionResult, GodotExecutor } from "../src/godot/executor.js";
 
 type TestContextWithCleanup = {
   after: (fn: () => Promise<void> | void) => void;
@@ -36,13 +36,30 @@ config/name="Test Project"
 }
 
 export function createMockGodotExecutor(
-  handler: (projectPath: string, operation: string, params: Record<string, unknown>) => Promise<ExecutionResult> | ExecutionResult
+  handler: (projectPath: string, operation: string, params: Record<string, unknown>) => Promise<ExecutionResult> | ExecutionResult,
+  options: {
+    runProjectDiagnostics?: (
+      projectPath: string,
+      runOptions: { scenePath?: string; frames: number; fixedFps?: number; debug: boolean; timeoutMs: number }
+    ) => Promise<CommandExecutionResult> | CommandExecutionResult;
+  } = {}
 ): GodotExecutor {
+  const successfulCommand: CommandExecutionResult = {
+    success: true,
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    truncated: false,
+    durationMs: 1,
+  };
   return {
     execute: handler,
     executeRaw: async () => ({ success: true, output: "" }),
+    executeRawDetailed: async () => successfulCommand,
     launchEditor: async () => ({ success: true, output: "" }),
     runProject: async () => ({ success: true, output: "" }),
+    runProjectDiagnostics: options.runProjectDiagnostics ?? (async () => successfulCommand),
     getVersion: async () => "4.3.stable",
     getGodotPath: () => "/mock/godot",
   } as unknown as GodotExecutor;

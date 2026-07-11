@@ -44,6 +44,7 @@ The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are 
 - **list_scenes** - List all scene files
 - **launch_editor** - Launch Godot editor
 - **run_project** - Run the project
+- **run_project_diagnostics** - Run a project or selected scene headlessly for a bounded number of frames and return structured parser/runtime diagnostics, exit status, timing, and captured output
 - **get_godot_version** - Get Godot version info
 - **create_resource** - Create resource files (.tres)
 - **run_godot_script** - Run custom GDScript inside a project and return JSON-safe results
@@ -145,14 +146,28 @@ Add a jump animation to the player scene that modifies
 the position.y property over 0.5 seconds
 ```
 
+### Validate a project at runtime
+
+```
+Run the project diagnostics for 120 frames and fix any script or runtime errors
+```
+
+`run_project_diagnostics` supports a specific `scene_path`, deterministic `fixed_fps`, bounded frame count and timeout, and output limits. Diagnostics include severity plus `res://` file and line/column locations when Godot reports them.
+
 ## Development
 
 ```bash
-# Run in development mode with hot reload
+# Run directly from TypeScript
 npm run dev
 
 # Build for production
 npm run build
+
+# Run unit tests
+npm test
+
+# Run tests with coverage
+npm run test:coverage
 
 # Run the built server
 npm start

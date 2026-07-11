@@ -1,6 +1,7 @@
 import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { findOpenGodotProjects } from "../godot/finder.js";
+import { parseGodotDiagnostics } from "../godot/diagnostics.js";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { executeGodotOperation } from "./godot-operation.js";
@@ -9,10 +10,27 @@ import {
   normalizeAbsoluteProjectPath,
   normalizeResourcePath,
   RESOURCE_EXTENSIONS,
+  SCENE_EXTENSIONS,
 } from "./path-utils.js";
 
 function formatConfigString(value: string): string {
   return JSON.stringify(value);
+}
+
+function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number, name: string): number {
+  const result = value === undefined ? fallback : value;
+  if (!Number.isInteger(result) || (result as number) < minimum || (result as number) > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return result as number;
+}
+
+function limitOutput(value: string, maximum: number): { text: string; truncated: boolean } {
+  const text = value.trim();
+  if (text.length <= maximum) {
+    return { text, truncated: false };
+  }
+  return { text: text.slice(text.length - maximum), truncated: true };
 }
 
 // Get Project Info Tool
@@ -114,6 +132,110 @@ export const runProjectTool: ToolHandler = {
     }
 
     return result.output;
+  },
+};
+
+// Run Project Diagnostics Tool
+export const runProjectDiagnosticsTool: ToolHandler = {
+  mayMutateProject: true,
+  definition: {
+    name: "run_project_diagnostics",
+    description:
+      "Run a Godot project or scene headlessly for a bounded number of frames and return structured parser, script, runtime, and engine diagnostics with captured output.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...projectSelectorProperties,
+        scene_path: {
+          type: "string",
+          description: "Optional res:// scene path to run instead of the project's main scene.",
+        },
+        frames: {
+          type: "integer",
+          description: "Number of frames to run before Godot exits.",
+          default: 120,
+          minimum: 1,
+          maximum: 3600,
+        },
+        fixed_fps: {
+          type: "integer",
+          description: "Optional fixed simulation FPS for deterministic diagnostics.",
+          minimum: 1,
+          maximum: 240,
+        },
+        debug: {
+          type: "boolean",
+          description: "Run with Godot debug mode enabled.",
+          default: true,
+        },
+        timeout_ms: {
+          type: "integer",
+          description: "Hard process timeout in milliseconds.",
+          default: 30000,
+          minimum: 1000,
+          maximum: 120000,
+        },
+        max_output_chars: {
+          type: "integer",
+          description: "Maximum characters returned for each output stream. Diagnostics are parsed before this limit is applied.",
+          default: 50000,
+          minimum: 1000,
+          maximum: 1000000,
+        },
+      },
+      required: [],
+    },
+    annotations: { openWorldHint: true },
+  },
+  async execute(args, executor) {
+    if (!executor) {
+      throw new Error("Godot is not available");
+    }
+
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = args.scene_path === undefined
+      ? undefined
+      : normalizeResourcePath(args.scene_path as string, {
+        fieldName: "scene_path",
+        extensions: SCENE_EXTENSIONS,
+      });
+    const frames = boundedInteger(args.frames, 120, 1, 3600, "frames");
+    const fixedFps = args.fixed_fps === undefined
+      ? undefined
+      : boundedInteger(args.fixed_fps, 60, 1, 240, "fixed_fps");
+    const timeoutMs = boundedInteger(args.timeout_ms, 30_000, 1_000, 120_000, "timeout_ms");
+    const maxOutputChars = boundedInteger(args.max_output_chars, 50_000, 1_000, 1_000_000, "max_output_chars");
+    const debug = args.debug === undefined ? true : args.debug === true;
+
+    const processResult = await executor.runProjectDiagnostics(projectPath, {
+      scenePath,
+      frames,
+      fixedFps,
+      debug,
+      timeoutMs,
+    });
+    const diagnostics = parseGodotDiagnostics(`${processResult.stdout}\n${processResult.stderr}`);
+    const stdout = limitOutput(processResult.stdout, maxOutputChars);
+    const stderr = limitOutput(processResult.stderr, maxOutputChars);
+    const errorCount = diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
+    const warningCount = diagnostics.length - errorCount;
+
+    return {
+      ok: processResult.success && errorCount === 0,
+      exit_code: processResult.exitCode,
+      timed_out: processResult.timedOut,
+      duration_ms: processResult.durationMs,
+      scene_path: scenePath ?? null,
+      frames,
+      fixed_fps: fixedFps ?? null,
+      debug,
+      summary: { errors: errorCount, warnings: warningCount },
+      diagnostics,
+      stdout: stdout.text,
+      stderr: stderr.text,
+      output_truncated: processResult.truncated || stdout.truncated || stderr.truncated,
+      ...(processResult.error ? { process_error: processResult.error } : {}),
+    };
   },
 };
 
@@ -359,6 +481,7 @@ export const projectTools = [
   listScenesTool,
   launchEditorTool,
   runProjectTool,
+  runProjectDiagnosticsTool,
   listOpenProjectsTool,
   getGodotVersionTool,
   createResourceTool,

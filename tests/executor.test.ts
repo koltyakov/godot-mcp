@@ -59,6 +59,93 @@ process.stdout.write('\\nignored after');
   });
 });
 
+test("execute rejects successful processes without a valid result marker", async (t) => {
+  const dir = await createTempDir(t);
+  const fakeGodotPath = path.join(dir, "fake-godot.mjs");
+  await writeText(fakeGodotPath, "#!/usr/bin/env node\nprocess.stdout.write('operation exited early');\n");
+  await fs.chmod(fakeGodotPath, 0o755);
+
+  const result = await new GodotExecutor(fakeGodotPath).execute(dir, "create_scene");
+
+  assert.equal(result.success, false);
+  assert.match(result.error ?? "", /did not return a valid result marker/);
+});
+
+test("execute requires both a successful marker and process exit", async (t) => {
+  const dir = await createTempDir(t);
+  const fakeGodotPath = path.join(dir, "fake-godot.mjs");
+  await writeText(
+    fakeGodotPath,
+    `#!/usr/bin/env node
+const markerArgs = process.argv.slice(process.argv.indexOf('--') + 1);
+const params = JSON.parse(markerArgs[1]);
+process.stdout.write('[GODOT_MCP_RESULT:' + params.__mcp_result_token + ']');
+process.stdout.write('{"success":true,"output":"saved"}');
+process.stdout.write('[/GODOT_MCP_RESULT:' + params.__mcp_result_token + ']');
+process.exit(2);
+`
+  );
+  await fs.chmod(fakeGodotPath, 0o755);
+
+  const result = await new GodotExecutor(fakeGodotPath).execute(dir, "create_scene");
+
+  assert.equal(result.success, false);
+  assert.equal(result.output, "saved");
+  assert.match(result.error ?? "", /exited with code 2/);
+});
+
+test("execute rejects result markers with an invalid success type", async (t) => {
+  const dir = await createTempDir(t);
+  const fakeGodotPath = path.join(dir, "fake-godot.mjs");
+  await writeText(
+    fakeGodotPath,
+    `#!/usr/bin/env node
+const markerArgs = process.argv.slice(process.argv.indexOf('--') + 1);
+const params = JSON.parse(markerArgs[1]);
+process.stdout.write('[GODOT_MCP_RESULT:' + params.__mcp_result_token + ']');
+process.stdout.write('{"success":"false","output":"not saved"}');
+process.stdout.write('[/GODOT_MCP_RESULT:' + params.__mcp_result_token + ']');
+`
+  );
+  await fs.chmod(fakeGodotPath, 0o755);
+
+  const result = await new GodotExecutor(fakeGodotPath).execute(dir, "create_scene");
+
+  assert.equal(result.success, false);
+  assert.match(result.error ?? "", /malformed result JSON/);
+});
+
+test("runProjectDiagnostics builds a bounded headless command", async (t) => {
+  const dir = await createTempDir(t);
+  const fakeGodotPath = path.join(dir, "fake-godot.mjs");
+  await writeText(
+    fakeGodotPath,
+    "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)));\n"
+  );
+  await fs.chmod(fakeGodotPath, 0o755);
+
+  const result = await new GodotExecutor(fakeGodotPath).runProjectDiagnostics(dir, {
+    scenePath: "res://scenes/main.tscn",
+    frames: 30,
+    fixedFps: 60,
+    debug: true,
+    timeoutMs: 5000,
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(JSON.parse(result.stdout), [
+    "--headless",
+    "--path",
+    dir,
+    "--debug",
+    "--fixed-fps",
+    "60",
+    "--quit-after",
+    "30",
+    "res://scenes/main.tscn",
+  ]);
+});
+
 test("executeRaw reports timeout failures", async () => {
   const executor = new GodotExecutor(process.execPath);
 

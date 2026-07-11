@@ -59,9 +59,9 @@ test("destructive tools are annotated destructiveHint=true", () => {
   }
 });
 
-test("launch_editor and run_project carry openWorldHint", () => {
+test("runtime tools carry openWorldHint", () => {
   const tools = getAllTools();
-  for (const name of ["launch_editor", "run_project"] as const) {
+  for (const name of ["launch_editor", "run_project", "run_project_diagnostics"] as const) {
     const tool = tools.find((t) => t.name === name);
     assert.ok(tool, `missing tool ${name}`);
     assert.equal(tool.annotations?.openWorldHint, true, `${name} should hint open world`);

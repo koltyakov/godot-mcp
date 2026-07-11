@@ -18,6 +18,17 @@ export interface ExecutionResult {
   pid?: number;
 }
 
+export interface CommandExecutionResult {
+  success: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  truncated: boolean;
+  durationMs: number;
+  error?: string;
+}
+
 interface BufferedProcessResult {
   code: number | null;
   stdout: string;
@@ -46,6 +57,22 @@ function extractMarkedResult(stdout: string, resultToken: string): string | null
   }
 
   return payload;
+}
+
+type OperationResultPayload = Record<string, unknown> & {
+  success: boolean;
+  message?: string;
+  error?: string;
+};
+
+function isResultPayload(value: unknown): value is OperationResultPayload {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const result = value as Record<string, unknown>;
+  return typeof result.success === "boolean" &&
+    (result.message === undefined || typeof result.message === "string") &&
+    (result.error === undefined || typeof result.error === "string");
 }
 
 export class GodotExecutor {
@@ -113,18 +140,24 @@ export class GodotExecutor {
     // Parse the nonce-scoped JSON result marker. This prevents user script
     // stdout from spoofing operation results with a static marker string.
     const resultPayload = extractMarkedResult(processResult.stdout, resultToken);
-    if (resultPayload) {
+    if (resultPayload !== null) {
       try {
-        const result = JSON.parse(resultPayload.trim());
+        const result: unknown = JSON.parse(resultPayload.trim());
+        if (!isResultPayload(result)) {
+          throw new Error("Invalid result payload");
+        }
         const output = typeof result.output === "string"
           ? result.output
           : result.output !== undefined
             ? JSON.stringify(result.output)
-            : result.message ?? JSON.stringify(result);
+            : result.message ?? JSON.stringify(result) ?? "";
+        const processSucceeded = processResult.code === 0;
         const executionResult: ExecutionResult = {
-          success: result.success ?? true,
+          success: (result.success ?? true) && processSucceeded,
           output,
-          error: result.error,
+          error: result.error || (processSucceeded
+            ? undefined
+            : processResult.stderr.trim() || `Godot process exited with code ${processResult.code}`),
         };
 
         Object.defineProperty(executionResult, "data", {
@@ -151,7 +184,6 @@ export class GodotExecutor {
 
         return executionResult;
       } catch {
-        // Fall through to the raw process result for malformed marker output.
         await log("warning", "godot-mcp", {
           message: "Could not parse GODOT_MCP_RESULT marker payload",
           operation,
@@ -161,7 +193,11 @@ export class GodotExecutor {
     }
 
     const stderr = processResult.stderr.trim();
-    const truncationNote = processResult.truncated ? "Output truncated while running Godot" : undefined;
+    const markerError = processResult.truncated
+      ? "Godot operation output was truncated before a valid result marker was received"
+      : resultPayload === null
+        ? "Godot operation did not return a valid result marker"
+        : "Godot operation returned malformed result JSON";
 
     if (processResult.code !== 0) {
       await log("error", "godot-mcp", {
@@ -175,9 +211,9 @@ export class GodotExecutor {
     }
 
     return {
-      success: processResult.code === 0,
+      success: false,
       output: processResult.stdout.trim(),
-      error: stderr || truncationNote,
+      error: stderr ? `${markerError}: ${stderr}` : markerError,
     };
   }
 
@@ -185,28 +221,60 @@ export class GodotExecutor {
    * Execute a raw Godot command without the operations script
    */
   async executeRaw(args: string[], cwd?: string, timeoutMs?: number): Promise<ExecutionResult> {
-    const processResult = await this.runBuffered(args, cwd, timeoutMs);
-    if (processResult.error) {
-      return { success: false, output: processResult.stdout.trim(), error: processResult.error };
-    }
-
-    if (processResult.timedOut) {
-      const timeoutMs = processResult.timedOutAfterMs ?? DEFAULT_TIMEOUT_MS;
+    const result = await this.executeRawDetailed(args, cwd, timeoutMs);
+    if (result.timedOut) {
       return {
         success: false,
-        output: processResult.stdout.trim(),
-        error: `Godot command timed out after ${timeoutMs}ms`,
+        output: result.stdout.trim(),
+        error: result.error,
       };
     }
 
-    const stderr = processResult.stderr.trim();
-    const truncationNote = processResult.truncated ? "Output truncated while running Godot" : undefined;
+    return {
+      success: result.success,
+      output: result.stdout.trim(),
+      error: result.error || result.stderr.trim() || (result.truncated ? "Output truncated while running Godot" : undefined),
+    };
+  }
+
+  /** Execute a raw command while preserving process metadata and both output streams. */
+  async executeRawDetailed(args: string[], cwd?: string, timeoutMs?: number): Promise<CommandExecutionResult> {
+    const startedAt = Date.now();
+    const processResult = await this.runBuffered(args, cwd, timeoutMs);
+    const effectiveTimeout = processResult.timedOutAfterMs ?? timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     return {
-      success: processResult.code === 0,
-      output: processResult.stdout.trim(),
-      error: stderr || truncationNote,
+      success: !processResult.error && !processResult.timedOut && processResult.code === 0,
+      exitCode: processResult.code,
+      stdout: processResult.stdout,
+      stderr: processResult.stderr,
+      timedOut: processResult.timedOut,
+      truncated: processResult.truncated,
+      durationMs: Date.now() - startedAt,
+      error: processResult.error || (processResult.timedOut
+        ? `Godot command timed out after ${effectiveTimeout}ms`
+        : undefined),
     };
+  }
+
+  /** Run a project for a bounded number of frames and capture its output. */
+  async runProjectDiagnostics(
+    projectPath: string,
+    options: { scenePath?: string; frames: number; fixedFps?: number; debug: boolean; timeoutMs: number }
+  ): Promise<CommandExecutionResult> {
+    const args = ["--headless", "--path", projectPath];
+    if (options.debug) {
+      args.push("--debug");
+    }
+    if (options.fixedFps !== undefined) {
+      args.push("--fixed-fps", String(options.fixedFps));
+    }
+    args.push("--quit-after", String(options.frames));
+    if (options.scenePath) {
+      args.push(options.scenePath);
+    }
+
+    return this.executeRawDetailed(args, projectPath, options.timeoutMs);
   }
 
   /**
@@ -244,6 +312,8 @@ export class GodotExecutor {
       let timedOut = false;
       let truncated = false;
       let timeout: NodeJS.Timeout | undefined;
+      let forceKillTimeout: NodeJS.Timeout | undefined;
+      let forceFinishTimeout: NodeJS.Timeout | undefined;
 
       const appendOutput = (current: string, data: Buffer): string => {
         const combined = current + data.toString();
@@ -264,6 +334,12 @@ export class GodotExecutor {
         if (timeout) {
           clearTimeout(timeout);
         }
+        if (forceKillTimeout) {
+          clearTimeout(forceKillTimeout);
+        }
+        if (forceFinishTimeout) {
+          clearTimeout(forceFinishTimeout);
+        }
         resolve(result);
       };
 
@@ -273,6 +349,7 @@ export class GodotExecutor {
           cwd,
           detached: process.platform !== "win32",
           env: { ...process.env },
+          stdio: ["ignore", "pipe", "pipe"],
         });
       } catch (error) {
         finish({
@@ -290,11 +367,22 @@ export class GodotExecutor {
         timedOut = true;
         this.killProcess(proc, "SIGTERM");
 
-        setTimeout(() => {
+        forceKillTimeout = setTimeout(() => {
           if (!settled) {
             this.killProcess(proc, "SIGKILL");
           }
         }, 1_000).unref();
+
+        forceFinishTimeout = setTimeout(() => {
+          finish({
+            code: null,
+            stdout,
+            stderr,
+            timedOut: true,
+            truncated,
+            timedOutAfterMs: effectiveTimeout,
+          });
+        }, 2_000).unref();
       }, effectiveTimeout);
 
       proc.stdout?.on("data", (data: Buffer) => {

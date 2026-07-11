@@ -1283,7 +1283,7 @@ func _connect_signal(params: Dictionary) -> Dictionary:
 	var signal_name = String(params.get("signal", ""))
 	var target_path = String(params.get("target_node_path", ""))
 	var method = String(params.get("method", ""))
-	var flags = int(params.get("flags", Node.CONNECT_PERSIST))
+	var flags = int(params.get("flags", Object.CONNECT_PERSIST))
 	if scene_path.is_empty() or source_path.is_empty() or signal_name.is_empty() or target_path.is_empty() or method.is_empty():
 		return {"success": false, "error": "scene_path, source_node_path, signal, target_node_path, and method are required"}
 	var packed_scene = load(scene_path) as PackedScene
@@ -1591,7 +1591,6 @@ func _serialize_node_tree(node: Node, root: Node = null, depth: int = 0) -> Dict
 # Return the set of properties PackedScene would store, filtered to those that
 # differ from the class default (so we don't dump unchanged defaults).
 func _serialize_node_properties(node: Node) -> Dictionary:
-	const STORAGE_FLAG = 8 # PROPERTY_USAGE_STORAGE
 	var result = {}
 	var cls = node.get_class()
 	for prop_info in node.get_property_list():
@@ -1606,7 +1605,7 @@ func _serialize_node_properties(node: Node) -> Dictionary:
 		]:
 			continue
 		var usage: int = prop_info.get("usage", 0)
-		if (usage & STORAGE_FLAG) == 0:
+		if (usage & PROPERTY_USAGE_STORAGE) == 0:
 			continue
 		var current = node.get(pname)
 		var default = ClassDB.class_get_property_default_value(cls, pname)

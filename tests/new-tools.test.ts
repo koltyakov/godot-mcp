@@ -90,7 +90,7 @@ test("set_node_meta dispatches with key and value", async (t) => {
   assert.equal(received.value, "boss");
 });
 
-test("connect_signal passes a default CONNECT_PERSIST flag of 8", async (t) => {
+test("connect_signal lets Godot apply its CONNECT_PERSIST default", async (t) => {
   const projectPath = await createGodotProject(t);
   let received: Record<string, unknown> = {};
   const executor = createMockGodotExecutor(async (_p, _op, params) => {
@@ -108,7 +108,7 @@ test("connect_signal passes a default CONNECT_PERSIST flag of 8", async (t) => {
     },
     executor
   );
-  assert.equal(received.flags, 8);
+  assert.equal("flags" in received, false);
   assert.equal(received.signal, "pressed");
   assert.equal(received.method, "_on_pressed");
 });

@@ -24,6 +24,7 @@ export const destructiveAnnotations: ToolAnnotations = { destructiveHint: true }
 
 export interface ToolHandler {
   definition: ToolDefinition;
+  mayMutateProject?: boolean;
   execute: (args: Record<string, unknown>, executor: GodotExecutor | null) => Promise<unknown>;
 }
 

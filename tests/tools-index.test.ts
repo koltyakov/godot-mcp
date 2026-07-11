@@ -11,6 +11,7 @@ test("getAllTools returns unique tool definitions", () => {
   assert.ok(names.includes("get_project_info"));
   assert.ok(names.includes("list_open_projects"));
   assert.ok(names.includes("run_godot_script"));
+  assert.ok(names.includes("run_project_diagnostics"));
   assert.ok(names.includes("create_scene"));
   assert.equal(new Set(names).size, names.length);
 });

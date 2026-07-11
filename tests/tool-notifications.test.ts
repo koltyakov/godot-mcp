@@ -55,6 +55,34 @@ test("executeTool does NOT notify for read-only tools", async (t) => {
   setResourceListChangedNotifier(null);
 });
 
+test("executeTool does NOT rescan resources for open-world runtime tools", async (t) => {
+  const projectPath = await createGodotProject(t);
+  let notifyCalls = 0;
+  setResourceListChangedNotifier(async () => {
+    notifyCalls += 1;
+  });
+  const executor = createMockGodotExecutor(async () => ({ success: true, output: "" }));
+
+  await executeTool("run_project", { project_path: projectPath }, executor);
+
+  assert.equal(notifyCalls, 0);
+  setResourceListChangedNotifier(null);
+});
+
+test("executeTool rescans resources after bounded diagnostics", async (t) => {
+  const projectPath = await createGodotProject(t);
+  let notifyCalls = 0;
+  setResourceListChangedNotifier(async () => {
+    notifyCalls += 1;
+  });
+  const executor = createMockGodotExecutor(async () => ({ success: true, output: "" }));
+
+  await executeTool("run_project_diagnostics", { project_path: projectPath }, executor);
+
+  assert.equal(notifyCalls, 1);
+  setResourceListChangedNotifier(null);
+});
+
 test("executeTool still notifies even if the notifier throws", async (t) => {
   const projectPath = await createGodotProject(t);
 

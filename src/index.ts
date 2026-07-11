@@ -9,80 +9,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { getAllTools, executeTool } from "./tools/index.js";
-import type { ToolDefinition } from "./tools/index.js";
 import { GodotExecutor } from "./godot/executor.js";
 import { findGodotPath } from "./godot/finder.js";
 import { setupResourceHandlers } from "./resources/index.js";
 import { setupPromptHandlers } from "./prompts/index.js";
 import { setServerLogger, setMinimumLogLevel, log } from "./logger.js";
 import { setResourceListChangedNotifier } from "./notifications.js";
-
-type JsonSchemaNode = {
-  type?: string;
-  enum?: unknown[];
-  properties?: Record<string, JsonSchemaNode>;
-  required?: string[];
-  items?: JsonSchemaNode;
-  additionalProperties?: boolean;
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function validateSchemaValue(schema: JsonSchemaNode, value: unknown, path: string): string[] {
-  const errors: string[] = [];
-
-  if (schema.enum && !schema.enum.includes(value)) {
-    errors.push(`${path} must be one of: ${schema.enum.join(", ")}`);
-    return errors;
-  }
-
-  if (schema.type) {
-    const valid =
-      (schema.type === "string" && typeof value === "string") ||
-      (schema.type === "number" && typeof value === "number" && Number.isFinite(value)) ||
-      (schema.type === "boolean" && typeof value === "boolean") ||
-      (schema.type === "object" && isRecord(value)) ||
-      (schema.type === "array" && Array.isArray(value));
-
-    if (!valid) {
-      errors.push(`${path} must be ${schema.type}`);
-      return errors;
-    }
-  }
-
-  if (schema.properties && isRecord(value)) {
-    for (const requiredKey of schema.required ?? []) {
-      if (value[requiredKey] === undefined || value[requiredKey] === null) {
-        errors.push(`${path}.${requiredKey} is required`);
-      }
-    }
-
-    for (const [key, childSchema] of Object.entries(schema.properties)) {
-      if (value[key] !== undefined && value[key] !== null) {
-        errors.push(...validateSchemaValue(childSchema, value[key], `${path}.${key}`));
-      }
-    }
-  }
-
-  if (schema.items && Array.isArray(value)) {
-    value.forEach((item, index) => {
-      errors.push(...validateSchemaValue(schema.items as JsonSchemaNode, item, `${path}[${index}]`));
-    });
-  }
-
-  return errors;
-}
-
-function validateToolArguments(tool: ToolDefinition | undefined, args: unknown): string[] {
-  if (!tool) {
-    return [];
-  }
-
-  const schema = tool.inputSchema as JsonSchemaNode;
-  return validateSchemaValue(schema, args, "arguments");
-}
+import { validateToolArguments } from "./schema-validation.js";
 
 // Initialize Godot executor
 let godotExecutor: GodotExecutor | null = null;
@@ -117,6 +50,7 @@ const server = new Server(
       "Writing to a project:",
       "- Always pass res:// paths (or paths relative to the project root) to create_*/edit_* tools. Absolute paths are rejected.",
       "- Mutation tools are annotated destructiveHint=true and emit resources/list_changed on success.",
+      "- After authoring changes, use run_project_diagnostics for a bounded run that returns actionable parser and runtime errors.",
       "",
       "Project selection:",
       "- If a single Godot project is open in an editor process, it is used by default.",

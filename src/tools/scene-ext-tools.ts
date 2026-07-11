@@ -154,8 +154,7 @@ export const connectSignalTool: ToolHandler = {
         method: { type: "string", description: "Method name on the target to call when the signal fires." },
         flags: {
           type: "integer",
-          description: "Optional Object.ConnectFlags bitmask. Defaults to CONNECT_PERSIST (8).",
-          default: 8,
+          description: "Optional Object.ConnectFlags bitmask. Defaults to Godot's CONNECT_PERSIST.",
         },
       },
       required: ["scene_path", "source_node_path", "signal", "target_node_path", "method"],
@@ -165,14 +164,17 @@ export const connectSignalTool: ToolHandler = {
   async execute(args, executor) {
     if (!executor) throw new Error("Godot is not available");
     const { projectPath, scenePath } = await resolveScenePath(args);
-    const result = await executor.execute(projectPath, "connect_signal", {
+    const params: Record<string, unknown> = {
       scene_path: scenePath,
       source_node_path: args.source_node_path as string,
       signal: args.signal as string,
       target_node_path: args.target_node_path as string,
       method: args.method as string,
-      flags: typeof args.flags === "number" ? args.flags : 8,
-    });
+    };
+    if (typeof args.flags === "number") {
+      params.flags = args.flags;
+    }
+    const result = await executor.execute(projectPath, "connect_signal", params);
     if (!result.success) throw new Error(result.error || "Failed to connect signal");
     return result.output;
   },
