@@ -7,6 +7,7 @@ import { MutationScheduler } from "../godot/mutation-scheduler.js";
 import { canonicalizeProspectivePath } from "../godot/executor.js";
 import * as path from "node:path";
 import { listRegisteredProjects } from "../project-registry.js";
+import { invalidateDependencyGraph } from "../dependency-graph.js";
 import { resolveProjectPath } from "./project-context.js";
 import { normalizeAbsoluteProjectPath, normalizeResourcePath, SCENE_EXTENSIONS } from "./path-utils.js";
 
@@ -101,10 +102,17 @@ export async function executeTool(
     );
   }
 
-  const result = await operation();
+  let result: unknown;
+  try {
+    result = await operation();
+  } finally {
+    if (toolMutatesProject(tool)) {
+      invalidateProjectFileCatalog();
+      invalidateDependencyGraph();
+    }
+  }
 
   if (toolMutatesProject(tool)) {
-    invalidateProjectFileCatalog();
     await notifyResourcesChanged();
   } else if (listRegisteredProjects().length !== registeredProjectCount) {
     await notifyResourcesChanged();

@@ -18,6 +18,7 @@ export const getDependencyGraphTool: ToolHandler = {
           description: "Include the orphans list (assets with no inbound references). Default true.",
           default: true,
         },
+        refresh: { type: "boolean", description: "Bypass in-flight/cache reuse and refresh file metadata." },
       },
       required: [],
     },
@@ -30,6 +31,9 @@ export const getDependencyGraphTool: ToolHandler = {
       project_path: report.projectPath,
       counts: report.counts,
       nodes: report.nodes,
+      complete: report.complete,
+      warnings: report.warnings,
+      unresolved: report.unresolved,
       ...(includeOrphans ? { orphans: report.orphans } : {}),
     };
   },
@@ -49,6 +53,7 @@ export const findUsagesTool: ToolHandler = {
           type: "string",
           description: "res:// path (or path relative to project root) of the asset to look up.",
         },
+        refresh: { type: "boolean" },
       },
       required: ["target_path"],
     },
@@ -57,7 +62,7 @@ export const findUsagesTool: ToolHandler = {
   async execute(args) {
     const targetPath = args.target_path as string;
     const report = await buildDependencyReport(args);
-    return findUsages(report, targetPath);
+    return { ...findUsages(report, targetPath), complete: report.complete, warnings: report.warnings, unresolved: report.unresolved };
   },
 };
 
@@ -77,6 +82,7 @@ export const listProjectFilesTool: ToolHandler = {
           description: "Filter by asset kind. Default 'all'.",
           default: "all",
         },
+        refresh: { type: "boolean" },
       },
       required: [],
     },
@@ -94,6 +100,9 @@ export const listProjectFilesTool: ToolHandler = {
       kind,
       files: paths,
       count: paths.length,
+      complete: report.complete,
+      warnings: report.warnings,
+      unresolved: report.unresolved,
     };
   },
 };

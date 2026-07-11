@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
-import { buildDependencyReport, findUsages } from "../src/dependency-graph.js";
+import { buildDependencyReport, findUsages, invalidateDependencyGraph } from "../src/dependency-graph.js";
 import { createGodotProject, createTempDir, writeText } from "./helpers.js";
 
 test("buildDependencyReport scans scenes/scripts/resources/shaders and classifies them", async (t) => {
@@ -173,4 +174,56 @@ test("dependency graph extracts shader includes", async (t) => {
 
   const report = await buildDependencyReport({ project_path: projectPath });
   assert.deepEqual(report.nodes["res://shaders/main.gdshader"].dependsOn, ["res://shaders/common.gdshaderinc"]);
+});
+
+test("dependency parsing cache observes changed file metadata", async (t) => {
+  invalidateDependencyGraph();
+  const projectPath = await createGodotProject(t);
+  const scriptPath = path.join(projectPath, "scripts", "player.gd");
+  await writeText(scriptPath, 'extends Node\nconst A = preload("res://a.tres")\n');
+  let report = await buildDependencyReport({ project_path: projectPath });
+  assert.deepEqual(report.nodes["res://scripts/player.gd"].dependsOn, ["res://a.tres"]);
+
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await writeText(scriptPath, 'extends Node\nconst B = preload("res://longer-name.tres")\n');
+  report = await buildDependencyReport({ project_path: projectPath });
+  assert.deepEqual(report.nodes["res://scripts/player.gd"].dependsOn, ["res://longer-name.tres"]);
+});
+
+test("dependency report exposes explicit completeness warnings", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "binary.res"), "binary-placeholder");
+  await writeText(path.join(projectPath, "script.gd"), 'extends Node\nconst X = preload("uid://abc123")\n');
+  await writeText(path.join(projectPath, "addons", "plugin.gd"), "extends EditorPlugin\n");
+
+  const report = await buildDependencyReport({ project_path: projectPath });
+  assert.equal(report.complete, false);
+  assert.ok(report.warnings.some((warning) => warning.includes("Opaque binary")));
+  assert.ok(report.warnings.some((warning) => warning.includes("addons/")));
+  assert.deepEqual(report.unresolved, ["uid://abc123"]);
+});
+
+test("concurrent dependency requests share one in-flight report", async (t) => {
+  invalidateDependencyGraph();
+  const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "script.gd"), "extends Node\n");
+  const [first, second] = await Promise.all([
+    buildDependencyReport({ project_path: projectPath }),
+    buildDependencyReport({ project_path: projectPath }),
+  ]);
+  assert.equal(first, second);
+});
+
+test("refresh bypasses metadata-matching dependency cache entries", async (t) => {
+  invalidateDependencyGraph();
+  const projectPath = await createGodotProject(t);
+  const scriptPath = path.join(projectPath, "script.gd");
+  await writeText(scriptPath, 'const X = preload("res://a.tres")\n');
+  const originalStats = await fs.stat(scriptPath);
+  await buildDependencyReport({ project_path: projectPath });
+
+  await writeText(scriptPath, 'const X = preload("res://b.tres")\n');
+  await fs.utimes(scriptPath, originalStats.atime, originalStats.mtime);
+  const report = await buildDependencyReport({ project_path: projectPath, refresh: true });
+  assert.deepEqual(report.nodes["res://script.gd"].dependsOn, ["res://b.tres"]);
 });

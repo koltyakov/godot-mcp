@@ -50,6 +50,25 @@ export interface DependencyReport {
     shaders: number;
     other: number;
   };
+  complete: boolean;
+  warnings: string[];
+  unresolved: string[];
+}
+
+type ParsedDependencies = { refs: string[]; className?: string; unresolved: string[]; warning?: string };
+type CachedDependencies = ParsedDependencies & { mtimeMs: number; size: number };
+const dependencyFileCache = new Map<string, CachedDependencies>();
+const pendingReports = new Map<string, Promise<DependencyReport>>();
+
+export function invalidateDependencyGraph(projectPath?: string): void {
+  if (!projectPath) {
+    dependencyFileCache.clear();
+    pendingReports.clear();
+    return;
+  }
+  const prefix = `${path.resolve(projectPath)}${path.sep}`;
+  for (const key of dependencyFileCache.keys()) if (key.startsWith(prefix)) dependencyFileCache.delete(key);
+  pendingReports.delete(path.resolve(projectPath));
 }
 
 function resPath(projectPath: string, absPath: string): string {
@@ -65,14 +84,15 @@ function kindFor(ext: string): AssetNode["kind"] {
   return "other";
 }
 
-async function scanProject(projectPath: string): Promise<AssetNode[]> {
+async function scanProject(projectPath: string, warnings: string[]): Promise<AssetNode[]> {
   const out: AssetNode[] = [];
 
   async function walk(dir: string): Promise<void> {
     let entries: import("fs").Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      warnings.push(`Failed to scan directory ${dir}: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
     for (const entry of entries) {
@@ -100,14 +120,22 @@ async function scanProject(projectPath: string): Promise<AssetNode[]> {
 async function readDependencies(
   fsPath: string,
   kind: AssetNode["kind"]
-): Promise<{ refs: string[]; className?: string }> {
+): Promise<ParsedDependencies> {
+  const stats = await fs.stat(fsPath).catch(() => null);
+  if (!stats) return { refs: [], unresolved: [], warning: `Failed to stat tracked asset: ${fsPath}` };
+  const cached = dependencyFileCache.get(fsPath);
+  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+    return { refs: [...cached.refs], className: cached.className, unresolved: [...cached.unresolved], warning: cached.warning };
+  }
+
   let text: string;
   try {
     text = await fs.readFile(fsPath, "utf-8");
-  } catch {
-    return { refs: [] };
+  } catch (error) {
+    return { refs: [], unresolved: [], warning: `Failed to read tracked asset ${fsPath}: ${error instanceof Error ? error.message : String(error)}` };
   }
   const refs = new Set<string>();
+  const unresolved = [...new Set(text.match(/uid:\/\/[A-Za-z0-9]+/g) ?? [])].sort();
   if (kind === "scene" || kind === "resource" || kind === "shader") {
     for (const m of text.matchAll(EXT_RESOURCE_RE)) {
       refs.add(m[1]);
@@ -122,10 +150,14 @@ async function readDependencies(
     }
     const classNameMatch = text.match(CLASS_NAME_RE);
     if (classNameMatch) {
-      return { refs: [...refs], className: classNameMatch[1] };
+      const result = { refs: [...refs], className: classNameMatch[1], unresolved };
+      dependencyFileCache.set(fsPath, { ...result, mtimeMs: stats.mtimeMs, size: stats.size });
+      return result;
     }
   }
-  return { refs: [...refs] };
+  const result = { refs: [...refs], unresolved };
+  dependencyFileCache.set(fsPath, { ...result, mtimeMs: stats.mtimeMs, size: stats.size });
+  return result;
 }
 
 function localize(projectPath: string, sourcePath: string, refPath: string): string | null {
@@ -141,15 +173,39 @@ export async function buildDependencyReport(
 ): Promise<DependencyReport> {
   const projectPath = await resolveProjectPath(args);
   const realProjectPath = await validateGodotProjectPath(projectPath);
+  if (args.refresh === true) invalidateDependencyGraph(realProjectPath);
+  if (args.refresh !== true) {
+    const pending = pendingReports.get(realProjectPath);
+    if (pending) return pending;
+  }
 
-  const nodes = await scanProject(realProjectPath);
+  const build = buildDependencyReportForProject(realProjectPath);
+  pendingReports.set(realProjectPath, build);
+  try {
+    return await build;
+  } finally {
+    if (pendingReports.get(realProjectPath) === build) pendingReports.delete(realProjectPath);
+  }
+}
+
+async function buildDependencyReportForProject(realProjectPath: string): Promise<DependencyReport> {
+  const warnings: string[] = [];
+  const nodes = await scanProject(realProjectPath, warnings);
   const nodeMap = new Map<string, AssetNode>();
+  const unresolved = new Set<string>();
   for (const n of nodes) nodeMap.set(n.path, n);
 
   // Forward pass: read each file and collect dependencies.
   for (const node of nodes) {
     const fsPath = path.join(realProjectPath, node.path.slice("res://".length));
-    const { refs, className } = await readDependencies(fsPath, node.kind);
+    const extension = path.extname(fsPath).toLowerCase();
+    if (extension === ".scn" || extension === ".res") {
+      warnings.push(`Opaque binary resource was not dependency-parsed: ${node.path}`);
+      continue;
+    }
+    const { refs, className, unresolved: fileUnresolved, warning } = await readDependencies(fsPath, node.kind);
+    if (warning) warnings.push(warning);
+    for (const uid of fileUnresolved) unresolved.add(uid);
     if (className) node.className = className;
     for (const ref of refs) {
       const localized = localize(realProjectPath, node.path, ref);
@@ -169,6 +225,7 @@ export async function buildDependencyReport(
   }
 
   const projectFile = await fs.readFile(path.join(realProjectPath, "project.godot"), "utf-8").catch(() => "");
+  for (const uid of projectFile.match(/uid:\/\/[A-Za-z0-9]+/g) ?? []) unresolved.add(uid);
   for (const match of projectFile.matchAll(PROJECT_RESOURCE_RE)) {
     const target = nodeMap.get(match[1]);
     if (target) target.referencedBy.push("res://project.godot");
@@ -196,11 +253,18 @@ export async function buildDependencyReport(
   const nodesRecord: Record<string, AssetNode> = {};
   for (const n of nodes) nodesRecord[n.path] = n;
 
+  if (unresolved.size > 0) warnings.push(`${unresolved.size} uid:// reference(s) require engine-assisted resolution`);
+  const addonsPresent = await fs.stat(path.join(realProjectPath, "addons")).then((stats) => stats.isDirectory()).catch(() => false);
+  if (addonsPresent) warnings.push("addons/ is excluded from dependency scanning");
+
   return {
     projectPath: realProjectPath,
     nodes: nodesRecord,
     orphans,
     counts,
+    complete: warnings.length === 0,
+    warnings: [...new Set(warnings)].sort(),
+    unresolved: [...unresolved].sort(),
   };
 }
 

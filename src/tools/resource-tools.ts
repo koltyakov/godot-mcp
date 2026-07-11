@@ -82,11 +82,12 @@ export const deleteResourceTool: ToolHandler = {
     const projectPath = await resolveProjectPath(args);
     const resourcePath = normalizeResourcePath(args.resource_path as string, { fieldName: "resource_path", extensions: RESOURCE_EXTENSIONS });
     if (args.force !== true) {
-      const usages = findUsages(await buildDependencyReport({ project_path: projectPath }), resourcePath);
+      const report = await buildDependencyReport({ project_path: projectPath });
+      const usages = findUsages(report, resourcePath);
       if (usages.referencedBy.length > 0) {
         throw new Error(`Resource is referenced by ${usages.referencedBy.join(", ")}; pass force=true to delete it`);
       }
-      throw new Error("Static dependency analysis cannot prove this resource is unreferenced (UID, binary, addon, and dynamic references may exist); pass force=true to delete it");
+      throw new Error(`Static dependency analysis cannot prove this resource is unreferenced${report.warnings.length ? ` (${report.warnings.join("; ")})` : ""}; pass force=true to delete it`);
     }
     const requestedPath = getProjectFilePath(projectPath, resourcePath, { fieldName: "resource_path", extensions: RESOURCE_EXTENSIONS });
     const requestedStats = await fs.lstat(requestedPath);
