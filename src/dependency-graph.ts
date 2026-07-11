@@ -17,13 +17,93 @@ const ALL_TRACKED = new Set<string>([...SCENE_EXT, ...SCRIPT_EXT, ...RESOURCE_EX
 //   [sub_resource type="..."]
 //   script = ExtResource("1")
 //   texture = SubResource("...")
-const EXT_RESOURCE_RE = /\[ext_resource[^\]]*path="([^"]+)"/g;
-// GDScript load()/preload() calls: load("res://...") or preload("res://...")
-const LOAD_RE = /\b(?:load|preload)\s*\(\s*"([^"]+)"/g;
+const EXT_RESOURCE_RE = /\[ext_resource[^\]]*\]/g;
+const RESOURCE_PATH_RE = /\bpath="([^"]+)"/;
+const RESOURCE_UID_RE = /\buid="(uid:\/\/[A-Za-z0-9]+)"/;
 // class_name X  ->  reference by global class name
 const CLASS_NAME_RE = /^\s*class_name\s+([A-Za-z_][A-Za-z0-9_]*)/m;
 const SHADER_INCLUDE_RE = /^\s*#include\s+"([^"]+)"/gm;
 const PROJECT_RESOURCE_RE = /\*?(res:\/\/[^"\s]+)/g;
+
+function stripGdscriptComments(text: string): string {
+  let output = "";
+  let quote = "";
+  let triple = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) {
+      output += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (triple && text.slice(index, index + 3) === quote.repeat(3)) {
+        output += quote.repeat(2);
+        index += 2;
+        quote = "";
+        triple = false;
+      } else if (!triple && char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "#") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      output += "\n";
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      triple = text.slice(index, index + 3) === char.repeat(3);
+      if (triple) {
+        output += char.repeat(3);
+        index += 2;
+      } else {
+        output += char;
+      }
+      continue;
+    }
+    output += char;
+  }
+  return output;
+}
+
+function extractGdscriptLoadRefs(text: string): string[] {
+  const refs: string[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "#") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const quote = char;
+      const triple = text.slice(index, index + 3) === quote.repeat(3);
+      index += triple ? 3 : 1;
+      let escaped = false;
+      for (; index < text.length; index += 1) {
+        if (escaped) {
+          escaped = false;
+        } else if (text[index] === "\\") {
+          escaped = true;
+        } else if (triple && text.slice(index, index + 3) === quote.repeat(3)) {
+          index += 2;
+          break;
+        } else if (!triple && text[index] === quote) {
+          break;
+        }
+      }
+      continue;
+    }
+    if (index > 0 && /[A-Za-z0-9_]/.test(text[index - 1])) continue;
+    const match = text.slice(index).match(/^(?:load|preload)\s*\(\s*(["'])(.*?)\1/);
+    if (!match) continue;
+    refs.push(match[2]);
+    index += match[0].length - 1;
+  }
+  return refs;
+}
 
 export interface AssetNode {
   /** res:// path */
@@ -53,9 +133,26 @@ export interface DependencyReport {
   complete: boolean;
   warnings: string[];
   unresolved: string[];
+  /** UID references keyed by their source asset. Used for optional engine enrichment. */
+  uidReferences: Record<string, string[]>;
+  /** Fallback paths paired with dependency UIDs, keyed by source and UID. */
+  uidFallbacks: Record<string, Record<string, string>>;
 }
 
-type ParsedDependencies = { refs: string[]; className?: string; unresolved: string[]; warning?: string };
+export interface EngineDependencyInspection {
+  dependencies: Record<string, string[]>;
+  uid_paths: Record<string, string>;
+  failures: Record<string, string>;
+  inspected_count: number;
+}
+
+type ParsedDependencies = {
+  refs: string[];
+  className?: string;
+  unresolved: string[];
+  uidFallbacks: Record<string, string>;
+  warning?: string;
+};
 type CachedDependencies = ParsedDependencies & { mtimeMs: number; size: number };
 const dependencyFileCache = new Map<string, CachedDependencies>();
 const pendingReports = new Map<string, Promise<DependencyReport>>();
@@ -122,40 +219,61 @@ async function readDependencies(
   kind: AssetNode["kind"]
 ): Promise<ParsedDependencies> {
   const stats = await fs.stat(fsPath).catch(() => null);
-  if (!stats) return { refs: [], unresolved: [], warning: `Failed to stat tracked asset: ${fsPath}` };
+  if (!stats) return { refs: [], unresolved: [], uidFallbacks: {}, warning: `Failed to stat tracked asset: ${fsPath}` };
   const cached = dependencyFileCache.get(fsPath);
   if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
-    return { refs: [...cached.refs], className: cached.className, unresolved: [...cached.unresolved], warning: cached.warning };
+    return {
+      refs: [...cached.refs],
+      className: cached.className,
+      unresolved: [...cached.unresolved],
+      uidFallbacks: { ...cached.uidFallbacks },
+      warning: cached.warning,
+    };
   }
 
   let text: string;
   try {
     text = await fs.readFile(fsPath, "utf-8");
   } catch (error) {
-    return { refs: [], unresolved: [], warning: `Failed to read tracked asset ${fsPath}: ${error instanceof Error ? error.message : String(error)}` };
+    return {
+      refs: [],
+      unresolved: [],
+      uidFallbacks: {},
+      warning: `Failed to read tracked asset ${fsPath}: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
   const refs = new Set<string>();
-  const unresolved = [...new Set(text.match(/uid:\/\/[A-Za-z0-9]+/g) ?? [])].sort();
+  const unresolved = new Set<string>();
+  const uidFallbacks: Record<string, string> = {};
   if (kind === "scene" || kind === "resource" || kind === "shader") {
-    for (const m of text.matchAll(EXT_RESOURCE_RE)) {
-      refs.add(m[1]);
+    for (const match of text.matchAll(EXT_RESOURCE_RE)) {
+      const declaration = match[0];
+      const dependencyPath = declaration.match(RESOURCE_PATH_RE)?.[1];
+      const dependencyUid = declaration.match(RESOURCE_UID_RE)?.[1];
+      if (dependencyPath) refs.add(dependencyPath);
+      if (dependencyUid) {
+        unresolved.add(dependencyUid);
+        if (dependencyPath && !dependencyPath.startsWith("uid://")) uidFallbacks[dependencyUid] = dependencyPath;
+      }
     }
   }
   if (kind === "shader") {
     for (const m of text.matchAll(SHADER_INCLUDE_RE)) refs.add(m[1]);
   }
   if (kind === "script") {
-    for (const m of text.matchAll(LOAD_RE)) {
-      refs.add(m[1]);
+    const code = stripGdscriptComments(text);
+    for (const ref of extractGdscriptLoadRefs(text)) {
+      refs.add(ref);
+      if (ref.startsWith("uid://")) unresolved.add(ref);
     }
-    const classNameMatch = text.match(CLASS_NAME_RE);
+    const classNameMatch = code.match(CLASS_NAME_RE);
     if (classNameMatch) {
-      const result = { refs: [...refs], className: classNameMatch[1], unresolved };
+      const result = { refs: [...refs], className: classNameMatch[1], unresolved: [...unresolved].sort(), uidFallbacks };
       dependencyFileCache.set(fsPath, { ...result, mtimeMs: stats.mtimeMs, size: stats.size });
       return result;
     }
   }
-  const result = { refs: [...refs], unresolved };
+  const result = { refs: [...refs], unresolved: [...unresolved].sort(), uidFallbacks };
   dependencyFileCache.set(fsPath, { ...result, mtimeMs: stats.mtimeMs, size: stats.size });
   return result;
 }
@@ -193,6 +311,8 @@ async function buildDependencyReportForProject(realProjectPath: string): Promise
   const nodes = await scanProject(realProjectPath, warnings);
   const nodeMap = new Map<string, AssetNode>();
   const unresolved = new Set<string>();
+  const uidReferences: Record<string, string[]> = {};
+  const uidFallbacks: Record<string, Record<string, string>> = {};
   for (const n of nodes) nodeMap.set(n.path, n);
 
   // Forward pass: read each file and collect dependencies.
@@ -203,9 +323,16 @@ async function buildDependencyReportForProject(realProjectPath: string): Promise
       warnings.push(`Opaque binary resource was not dependency-parsed: ${node.path}`);
       continue;
     }
-    const { refs, className, unresolved: fileUnresolved, warning } = await readDependencies(fsPath, node.kind);
+    const { refs, className, unresolved: fileUnresolved, uidFallbacks: fileUidFallbacks, warning } = await readDependencies(fsPath, node.kind);
     if (warning) warnings.push(warning);
     for (const uid of fileUnresolved) unresolved.add(uid);
+    if (fileUnresolved.length > 0) uidReferences[node.path] = fileUnresolved;
+    if (Object.keys(fileUidFallbacks).length > 0) {
+      uidFallbacks[node.path] = Object.fromEntries(Object.entries(fileUidFallbacks).flatMap(([uid, fallback]) => {
+        const localized = localize(realProjectPath, node.path, fallback);
+        return localized ? [[uid, localized]] : [];
+      }));
+    }
     if (className) node.className = className;
     for (const ref of refs) {
       const localized = localize(realProjectPath, node.path, ref);
@@ -225,8 +352,13 @@ async function buildDependencyReportForProject(realProjectPath: string): Promise
   }
 
   const projectFile = await fs.readFile(path.join(realProjectPath, "project.godot"), "utf-8").catch(() => "");
-  for (const uid of projectFile.match(/uid:\/\/[A-Za-z0-9]+/g) ?? []) unresolved.add(uid);
-  for (const match of projectFile.matchAll(PROJECT_RESOURCE_RE)) {
+  const projectSettings = projectFile.split("\n")
+    .filter((line) => !line.trimStart().startsWith(";") && !line.trimStart().startsWith("#"))
+    .join("\n");
+  const projectUids = [...new Set(projectSettings.match(/uid:\/\/[A-Za-z0-9]+/g) ?? [])].sort();
+  for (const uid of projectUids) unresolved.add(uid);
+  if (projectUids.length > 0) uidReferences["res://project.godot"] = projectUids;
+  for (const match of projectSettings.matchAll(PROJECT_RESOURCE_RE)) {
     const target = nodeMap.get(match[1]);
     if (target) target.referencedBy.push("res://project.godot");
   }
@@ -265,7 +397,105 @@ async function buildDependencyReportForProject(realProjectPath: string): Promise
     complete: warnings.length === 0,
     warnings: [...new Set(warnings)].sort(),
     unresolved: [...unresolved].sort(),
+    uidReferences,
+    uidFallbacks,
   };
+}
+
+function cloneReport(report: DependencyReport): DependencyReport {
+  return {
+    ...report,
+    counts: { ...report.counts },
+    nodes: Object.fromEntries(Object.entries(report.nodes).map(([assetPath, node]) => [assetPath, {
+      ...node,
+      dependsOn: [...node.dependsOn],
+      referencedBy: [...node.referencedBy],
+    }])),
+    orphans: [...report.orphans],
+    warnings: [...report.warnings],
+    unresolved: [...report.unresolved],
+    uidReferences: Object.fromEntries(Object.entries(report.uidReferences).map(([source, uids]) => [source, [...uids]])),
+    uidFallbacks: Object.fromEntries(Object.entries(report.uidFallbacks).map(([source, fallbacks]) => [source, { ...fallbacks }])),
+  };
+}
+
+export function addDependencyWarning(report: DependencyReport, warning: string): DependencyReport {
+  const enriched = cloneReport(report);
+  enriched.warnings = [...new Set([...enriched.warnings, warning])].sort();
+  enriched.complete = false;
+  return enriched;
+}
+
+export function mergeEngineInspection(
+  report: DependencyReport,
+  inspection: EngineDependencyInspection
+): DependencyReport {
+  const enriched = cloneReport(report);
+  const inspectedPaths = new Set(Object.keys(inspection.dependencies).filter((source) => !(source in inspection.failures)));
+
+  for (const [source, dependencies] of Object.entries(inspection.dependencies)) {
+    const node = enriched.nodes[source];
+    if (!node) continue;
+    node.dependsOn = [...new Set([...node.dependsOn, ...dependencies.filter((dep) => dep !== source)])].sort();
+  }
+
+  const projectReferences = new Set<string>();
+  for (const node of Object.values(enriched.nodes)) {
+    if (node.referencedBy.includes("res://project.godot")) projectReferences.add(node.path);
+  }
+  const unresolved = new Set(enriched.unresolved);
+  for (const [source, uids] of Object.entries(enriched.uidReferences)) {
+    const sourceInspected = inspectedPaths.has(source);
+    for (const uid of uids) {
+      const resolved = inspection.uid_paths[uid];
+      if (!resolved?.startsWith("res://") || (source !== "res://project.godot" && !sourceInspected)) continue;
+      unresolved.delete(uid);
+      if (source === "res://project.godot") {
+        projectReferences.add(resolved);
+      } else {
+        const node = enriched.nodes[source];
+        if (node && resolved !== source) {
+          const fallback = enriched.uidFallbacks[source]?.[uid];
+          if (fallback) node.dependsOn = node.dependsOn.filter((dependency) => dependency !== fallback);
+          node.dependsOn = [...new Set([...node.dependsOn, resolved])].sort();
+        }
+      }
+    }
+  }
+
+  for (const node of Object.values(enriched.nodes)) node.referencedBy = [];
+  for (const node of Object.values(enriched.nodes)) {
+    for (const dependency of node.dependsOn) {
+      const target = enriched.nodes[dependency];
+      if (target) target.referencedBy.push(node.path);
+    }
+  }
+  for (const targetPath of projectReferences) {
+    const target = enriched.nodes[targetPath];
+    if (target) target.referencedBy.push("res://project.godot");
+  }
+  for (const node of Object.values(enriched.nodes)) {
+    node.referencedBy = [...new Set(node.referencedBy)].sort();
+  }
+
+  enriched.unresolved = [...unresolved].sort();
+  enriched.orphans = Object.values(enriched.nodes)
+    .filter((node) => node.referencedBy.length === 0)
+    .map((node) => node.path)
+    .sort();
+  enriched.warnings = enriched.warnings.filter((warning) => {
+    if (/uid:\/\/ reference\(s\) require engine-assisted resolution$/.test(warning)) return false;
+    const opaquePrefix = "Opaque binary resource was not dependency-parsed: ";
+    return !warning.startsWith(opaquePrefix) || !inspectedPaths.has(warning.slice(opaquePrefix.length));
+  });
+  if (enriched.unresolved.length > 0) {
+    enriched.warnings.push(`${enriched.unresolved.length} uid:// reference(s) require engine-assisted resolution`);
+  }
+  const failedCount = Object.keys(inspection.failures).length;
+  if (failedCount > 0) enriched.warnings.push(`Engine dependency inspection failed for ${failedCount} asset(s)`);
+  enriched.warnings = [...new Set(enriched.warnings)].sort();
+  enriched.complete = enriched.warnings.length === 0;
+  return enriched;
 }
 
 export function findUsages(report: DependencyReport, targetPath: string): {

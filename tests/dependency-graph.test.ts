@@ -3,7 +3,12 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
-import { buildDependencyReport, findUsages, invalidateDependencyGraph } from "../src/dependency-graph.js";
+import {
+  buildDependencyReport,
+  findUsages,
+  invalidateDependencyGraph,
+  mergeEngineInspection,
+} from "../src/dependency-graph.js";
 import { createGodotProject, createTempDir, writeText } from "./helpers.js";
 
 test("buildDependencyReport scans scenes/scripts/resources/shaders and classifies them", async (t) => {
@@ -226,4 +231,107 @@ test("refresh bypasses metadata-matching dependency cache entries", async (t) =>
   await fs.utimes(scriptPath, originalStats.atime, originalStats.mtime);
   const report = await buildDependencyReport({ project_path: projectPath, refresh: true });
   assert.deepEqual(report.nodes["res://script.gd"].dependsOn, ["res://b.tres"]);
+});
+
+test("engine inspection merges binary and UID edges without mutating the static report", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "binary.res"), "binary-placeholder");
+  await writeText(path.join(projectPath, "source.gd"), 'const Target = preload("uid://abc123")\n');
+  await writeText(path.join(projectPath, "target.tres"), '[gd_resource type="Resource"]\n');
+  const report = await buildDependencyReport({ project_path: projectPath });
+  const original = JSON.stringify(report);
+
+  const enriched = mergeEngineInspection(report, {
+    dependencies: {
+      "res://binary.res": ["res://target.tres"],
+      "res://source.gd": [],
+      "res://target.tres": [],
+    },
+    uid_paths: { "uid://abc123": "res://target.tres" },
+    failures: {},
+    inspected_count: 3,
+  });
+
+  assert.equal(JSON.stringify(report), original);
+  assert.deepEqual(enriched.nodes["res://binary.res"].dependsOn, ["res://target.tres"]);
+  assert.deepEqual(enriched.nodes["res://source.gd"].dependsOn, ["res://target.tres"]);
+  assert.deepEqual(enriched.nodes["res://target.tres"].referencedBy, ["res://binary.res", "res://source.gd"]);
+  assert.deepEqual(enriched.unresolved, []);
+  assert.equal(enriched.warnings.some((warning) => warning.includes("Opaque binary")), false);
+  assert.equal(enriched.complete, true);
+});
+
+test("engine inspection retains unresolved warnings and reports partial failures", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "binary.res"), "binary-placeholder");
+  await writeText(path.join(projectPath, "source.gd"), 'const Target = preload("uid://abc123")\n');
+  const report = await buildDependencyReport({ project_path: projectPath });
+
+  const enriched = mergeEngineInspection(report, {
+    dependencies: { "res://source.gd": [] },
+    uid_paths: {},
+    failures: { "res://binary.res": "not recognized" },
+    inspected_count: 1,
+  });
+
+  assert.deepEqual(enriched.unresolved, ["uid://abc123"]);
+  assert.ok(enriched.warnings.some((warning) => warning.includes("Opaque binary")));
+  assert.ok(enriched.warnings.some((warning) => warning.includes("failed for 1 asset")));
+  assert.equal(enriched.complete, false);
+});
+
+test("UID extraction ignores comments and replaces paired fallback paths", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(
+    path.join(projectPath, "source.gd"),
+    '# preload("uid://commentonly")\nvar text = \'preload("uid://stringonly")\'\nextends Node\n'
+  );
+  await writeText(path.join(projectPath, "scene.tscn"), [
+    '[gd_scene load_steps=2 format=3 uid="uid://selfuid"]',
+    '[ext_resource type="Resource" uid="uid://dependency" path="res://stale.tres" id="1"]',
+  ].join("\n"));
+  await writeText(path.join(projectPath, "stale.tres"), '[gd_resource type="Resource"]\n');
+  await writeText(path.join(projectPath, "current.tres"), '[gd_resource type="Resource"]\n');
+  const report = await buildDependencyReport({ project_path: projectPath });
+
+  assert.deepEqual(report.unresolved, ["uid://dependency"]);
+  const enriched = mergeEngineInspection(report, {
+    dependencies: {
+      "res://scene.tscn": ["res://stale.tres"],
+      "res://source.gd": [],
+      "res://stale.tres": [],
+      "res://current.tres": [],
+    },
+    uid_paths: { "uid://dependency": "res://current.tres" },
+    failures: {},
+    inspected_count: 4,
+  });
+
+  assert.deepEqual(enriched.nodes["res://scene.tscn"].dependsOn, ["res://current.tres"]);
+});
+
+test("UID resolution removes localized relative fallbacks and ignores project comments", async (t) => {
+  const projectPath = await createGodotProject(t, 'config_version=5\n; uid://commentonly\n');
+  await writeText(path.join(projectPath, "nested", "scene.tscn"), [
+    '[gd_scene load_steps=2 format=3]',
+    '[ext_resource type="Resource" path="../stale.tres" uid="uid://dependency" id="1"]',
+  ].join("\n"));
+  await writeText(path.join(projectPath, "stale.tres"), '[gd_resource type="Resource"]\n');
+  await writeText(path.join(projectPath, "current.tres"), '[gd_resource type="Resource"]\n');
+  const report = await buildDependencyReport({ project_path: projectPath });
+
+  assert.deepEqual(report.unresolved, ["uid://dependency"]);
+  const enriched = mergeEngineInspection(report, {
+    dependencies: {
+      "res://nested/scene.tscn": ["res://stale.tres", "res://current.tres"],
+      "res://stale.tres": [],
+      "res://current.tres": [],
+    },
+    uid_paths: { "uid://dependency": "res://current.tres", "uid://commentonly": "res://stale.tres" },
+    failures: {},
+    inspected_count: 3,
+  });
+
+  assert.deepEqual(enriched.nodes["res://nested/scene.tscn"].dependsOn, ["res://current.tres"]);
+  assert.equal(enriched.nodes["res://stale.tres"].referencedBy.includes("res://project.godot"), false);
 });

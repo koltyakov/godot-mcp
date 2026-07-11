@@ -98,6 +98,8 @@ func _execute_operation(operation: String, params: Dictionary) -> Dictionary:
 			return _list_scenes(params)
 		"list_scripts":
 			return _list_scripts(params)
+		"inspect_dependencies":
+			return _inspect_dependencies(params)
 		"classdb_info":
 			return _classdb_info(params)
 		"compile_script":
@@ -1215,6 +1217,79 @@ func _list_scripts(params: Dictionary) -> Dictionary:
 	var scripts = []
 	_scan_for_files("res://", [".gd"], scripts)
 	return {"success": true, "project_path": _project_root_path(), "scripts": scripts, "count": scripts.size()}
+
+
+func _inspect_dependencies(params: Dictionary) -> Dictionary:
+	var paths = params.get("paths", [])
+	var uids = params.get("uids", [])
+	if not paths is Array or not uids is Array:
+		return {"success": false, "error": "paths and uids must be arrays"}
+	if paths.size() > 10000 or uids.size() > 10000:
+		return {"success": false, "error": "paths and uids are limited to 10000 entries each"}
+
+	var dependencies := {}
+	var failures := {}
+	var output_chars := 0
+	const OUTPUT_CHAR_BUDGET := 400000
+	for path_value in paths:
+		var source_path := String(path_value)
+		if not source_path.begins_with("res://"):
+			failures[source_path] = "Path must start with res://"
+			continue
+		if not ResourceLoader.exists(source_path) and source_path.get_extension().to_lower() in ["scn", "res"]:
+			failures[source_path] = "Resource is not recognized by Godot"
+			continue
+		var direct_dependencies := []
+		var unparsed_dependencies := []
+		for raw_dependency in ResourceLoader.get_dependencies(source_path):
+			var dependency_path := _dependency_entry_path(String(raw_dependency))
+			if dependency_path.is_empty():
+				unparsed_dependencies.append(String(raw_dependency))
+			elif dependency_path != source_path and not direct_dependencies.has(dependency_path):
+				direct_dependencies.append(dependency_path)
+		direct_dependencies.sort()
+		var estimated_chars := source_path.length() + 16
+		for dependency_path in direct_dependencies:
+			estimated_chars += String(dependency_path).length() + 4
+		if output_chars + estimated_chars > OUTPUT_CHAR_BUDGET:
+			failures[source_path] = "Dependency output exceeded the safe response budget"
+			continue
+		dependencies[source_path] = direct_dependencies
+		output_chars += estimated_chars
+		if not unparsed_dependencies.is_empty():
+			failures[source_path] = "Could not resolve " + str(unparsed_dependencies.size()) + " dependency entry or entries"
+
+	var uid_paths := {}
+	for uid_value in uids:
+		var uid := String(uid_value)
+		var id := ResourceUID.text_to_id(uid)
+		if id != ResourceUID.INVALID_ID and ResourceUID.has_id(id):
+			var resolved_path := ResourceUID.get_id_path(id)
+			if resolved_path.begins_with("res://"):
+				uid_paths[uid] = resolved_path
+
+	return {
+		"success": true,
+		"dependencies": dependencies,
+		"uid_paths": uid_paths,
+		"failures": failures,
+		"inspected_count": dependencies.size(),
+	}
+
+
+func _dependency_entry_path(entry: String) -> String:
+	for component in entry.split("::", false):
+		if component.begins_with("res://"):
+			return component
+	for component in entry.split("::", false):
+		if not component.begins_with("uid://"):
+			continue
+		var id := ResourceUID.text_to_id(component)
+		if id != ResourceUID.INVALID_ID and ResourceUID.has_id(id):
+			var resolved_path := ResourceUID.get_id_path(id)
+			if resolved_path.begins_with("res://"):
+				return resolved_path
+	return ""
 
 
 # ============== ClassDB Discovery ==============

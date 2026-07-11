@@ -66,8 +66,8 @@ The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are 
 - **export_project** - Run `godot --headless --export-release` for a preset (10-minute timeout)
 - **upgrade_project** - Run `godot --headless --upgrade` + `--import` to migrate to the current engine version
 - **read_project_file** - Read any text file inside the project root
-- **get_dependency_graph** - Forward + reverse dependency graph across scenes/scripts/resources/shaders (pure filesystem scan, no Godot spawn)
-- **find_usages** - Reverse dependency lookup: "what references `res://foo.gd`?"
+- **get_dependency_graph** - Forward + reverse dependency graph across scenes/scripts/resources/shaders; the cached filesystem scan is the default, while `engine: true` enriches binary, UID, and loader-reported dependencies through headless Godot
+- **find_usages** - Reverse dependency lookup: "what references `res://foo.gd`?" with the same optional engine enrichment
 - **list_project_files** - List tracked assets by kind
 
 Project-targeted tools accept `project_path`, but it is optional when Godot has an opened project. If exactly one open project is detected, the server uses it by default. If multiple projects are open, provide `project_name` or `project_path`; ambiguous requests report the available open projects so the client can ask which one to use.

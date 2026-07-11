@@ -39,6 +39,13 @@ jobs:
           godot --headless --path "$project" --script "$PWD/scripts/godot_operations.gd" -- \
             create_scene --request-file "$request"
           test -f "$project/main.tscn"
+          printf 'extends Node2D\n' > "$project/dependency_probe.gd"
+          printf '%s\n' '[gd_scene load_steps=2 format=3]' '' '[ext_resource type="Script" path="res://dependency_probe.gd" id="1"]' '' '[node name="Main" type="Node2D"]' 'script = ExtResource("1")' > "$project/main.tscn"
+          dependency_request="$(mktemp)"
+          printf '%s' '{"paths":["res://main.tscn"],"uids":[],"__mcp_result_token":"deps"}' > "$dependency_request"
+          dependency_output="$(godot --headless --path "$project" --script "$PWD/scripts/godot_operations.gd" -- inspect_dependencies --request-file "$dependency_request")"
+          grep -q '"inspected_count":1' <<< "$dependency_output"
+          grep -q 'res://dependency_probe.gd' <<< "$dependency_output"
           mkdir -p "$project/addons"
           cp -R "$PWD/addons/godot_mcp_bridge" "$project/addons/"
           godot --headless --editor --path "$project" --quit-after 5
