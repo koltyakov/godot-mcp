@@ -105,7 +105,7 @@ func _handle_request(peer: StreamPeerTCP, line: String) -> void:
 			"instance_id": _instance_id,
 			"project_path": _project_path(),
 			"godot_version": String(Engine.get_version_info().get("string", "unknown")),
-			"capabilities": ["editor.state", "editor.scene.read"],
+			"capabilities": ["editor.state", "editor.scene.read", "editor.play.control", "editor.performance"],
 		})
 		return
 
@@ -129,6 +129,34 @@ func _handle_request(peer: StreamPeerTCP, line: String) -> void:
 				"dirty_confidence": "unknown",
 				"tree": _serialize_node(scene_root, scene_root, 0),
 			})
+		"editor.play":
+			var mode := String(params.get("mode", "main"))
+			if EditorInterface.is_playing_scene():
+				_send_error(peer, request_id, -32005, "A scene is already playing")
+			elif mode == "current" and EditorInterface.get_edited_scene_root() == null:
+				_send_error(peer, request_id, -32004, "No current scene is available to play")
+			elif mode == "main" and String(ProjectSettings.get_setting("application/run/main_scene", "")).is_empty():
+				_send_error(peer, request_id, -32004, "No main scene is configured")
+			elif mode == "main":
+				EditorInterface.play_main_scene()
+				if EditorInterface.is_playing_scene():
+					_send_result(peer, request_id, {"playing": true, "mode": mode})
+				else:
+					_send_error(peer, request_id, -32004, "Godot did not start the main scene")
+			elif mode == "current":
+				EditorInterface.play_current_scene()
+				if EditorInterface.is_playing_scene():
+					_send_result(peer, request_id, {"playing": true, "mode": mode})
+				else:
+					_send_error(peer, request_id, -32004, "Godot did not start the current scene")
+			else:
+				_send_error(peer, request_id, -32602, "mode must be main or current")
+		"editor.stop":
+			if EditorInterface.is_playing_scene():
+				EditorInterface.stop_playing_scene()
+			_send_result(peer, request_id, {"playing": false})
+		"editor.get_performance":
+			_send_result(peer, request_id, _performance_state())
 		_:
 			_send_error(peer, request_id, -32601, "Method not found")
 
@@ -160,6 +188,22 @@ func _editor_state() -> Dictionary:
 		"open_scenes": open_scenes,
 		"selection": {"nodes": selected},
 		"play": {"playing": EditorInterface.is_playing_scene()},
+	}
+
+
+func _performance_state() -> Dictionary:
+	return {
+		"fps": Performance.get_monitor(Performance.TIME_FPS),
+		"process_ms": Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+		"physics_process_ms": Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
+		"static_memory_bytes": Performance.get_monitor(Performance.MEMORY_STATIC),
+		"object_count": Performance.get_monitor(Performance.OBJECT_COUNT),
+		"resource_count": Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT),
+		"node_count": Performance.get_monitor(Performance.OBJECT_NODE_COUNT),
+		"orphan_node_count": Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT),
+		"draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+		"primitives": Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
+		"video_memory_bytes": Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED),
 	}
 
 
@@ -209,7 +253,7 @@ func _write_descriptor() -> void:
 		"host": "127.0.0.1",
 		"port": _server.get_local_port(),
 		"token": _token,
-		"capabilities": ["editor.state", "editor.scene.read"],
+		"capabilities": ["editor.state", "editor.scene.read", "editor.play.control", "editor.performance"],
 		"heartbeat_at_ms": _now_ms(),
 	}
 	var temporary_path := _descriptor_path + ".tmp"

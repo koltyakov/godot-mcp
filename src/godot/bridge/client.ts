@@ -13,13 +13,15 @@ export async function callEditorBridge(
   descriptor: BridgeDescriptor,
   method: string,
   params: Record<string, unknown> = {},
-  timeoutMs = 5_000
+  timeoutMs = 5_000,
+  mutation = false
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const signal = getExecutionSignal();
     const socket = net.createConnection({ host: descriptor.host, port: descriptor.port });
     let buffer = "";
     let authenticated = false;
+    let requestDispatched = false;
     const timeout = setTimeout(() => finish(new Error(`Editor bridge timed out after ${timeoutMs}ms`)), timeoutMs);
     timeout.unref();
 
@@ -30,6 +32,7 @@ export async function callEditorBridge(
       error ? reject(error) : resolve(value);
     };
     const onAbort = (): void => {
+      if (mutation && requestDispatched) return;
       const error = new Error("Operation cancelled");
       error.name = "AbortError";
       finish(error);
@@ -73,6 +76,7 @@ export async function callEditorBridge(
         }
         if (!authenticated && response.id === 1) {
           authenticated = true;
+          requestDispatched = true;
           socket.write(requestLine(2, method, params));
         } else if (authenticated && response.id === 2) {
           finish(undefined, response.result);

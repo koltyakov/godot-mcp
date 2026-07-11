@@ -90,4 +90,49 @@ export const readEditorSceneTool: ToolHandler = {
   },
 };
 
-export const editorTools = [getEditorStateTool, readEditorSceneTool];
+export const controlEditorPlayTool: ToolHandler = {
+  mayMutateProject: true,
+  definition: {
+    name: "control_editor_play",
+    description: "Start the main/current scene or stop the running project through the authenticated live editor bridge.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...projectSelectorProperties,
+        ...instanceProperty,
+        action: { type: "string", enum: ["play_main", "play_current", "stop"] },
+      },
+      required: ["action"],
+    },
+    annotations: { openWorldHint: true },
+  },
+  async execute(args) {
+    const projectPath = await resolveProjectPath(args);
+    const descriptor = await selectEditorBridge(projectPath, args.editor_instance_id as string | undefined);
+    if (!descriptor) throw new Error("The live editor bridge is not available for this project");
+    const action = args.action as string;
+    if (action === "stop") return callEditorBridge(descriptor, "editor.stop", {}, 5_000, true);
+    return callEditorBridge(descriptor, "editor.play", { mode: action === "play_current" ? "current" : "main" }, 5_000, true);
+  },
+};
+
+export const getEditorPerformanceTool: ToolHandler = {
+  definition: {
+    name: "get_editor_performance",
+    description: "Read live FPS, timing, memory, object, node, draw-call, primitive, and video-memory monitors from the Godot editor process.",
+    inputSchema: {
+      type: "object",
+      properties: { ...projectSelectorProperties, ...instanceProperty },
+      required: [],
+    },
+    annotations: readOnlyAnnotations,
+  },
+  async execute(args) {
+    const projectPath = await resolveProjectPath(args);
+    const descriptor = await selectEditorBridge(projectPath, args.editor_instance_id as string | undefined);
+    if (!descriptor) throw new Error("The live editor bridge is not available for this project");
+    return { live: true, instance_id: descriptor.instance_id, performance: await callEditorBridge(descriptor, "editor.get_performance") };
+  },
+};
+
+export const editorTools = [getEditorStateTool, readEditorSceneTool, controlEditorPlayTool, getEditorPerformanceTool];

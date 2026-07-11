@@ -47,6 +47,7 @@ The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are 
 - **run_project** - Run the project
 - **run_project_diagnostics** - Run a project or selected scene headlessly for a bounded number of frames and return structured parser/runtime diagnostics, exit status, timing, and captured output
 - **get_editor_state** / **read_editor_scene** - Read live editor selection, play state, open scenes, and the active in-memory scene through the optional authenticated editor bridge
+- **control_editor_play** / **get_editor_performance** - Start/stop editor play sessions and read live timing, memory, object, node, rendering, and video-memory monitors
 - **get_godot_version** - Get Godot version info
 - **create_resource** - Create resource files (.tres)
 - **list_resources** / **read_resource** / **update_resource** / **delete_resource** - Inspect and manage `.tres` and `.res` resources; deletion is dependency-protected by default
@@ -117,7 +118,7 @@ npm run build
 
 Copy `addons/godot_mcp_bridge` into the target project's `addons` directory, then enable **Godot MCP Editor Bridge** under **Project Settings → Plugins**. The plugin binds only to `127.0.0.1`, generates a fresh 256-bit token for each editor session, and publishes a short-lived descriptor under `.godot/godot_mcp_bridge/instances`.
 
-The bridge is read-only. It exposes the active in-memory scene, current selection, open scenes, and play state without permitting arbitrary method calls or project writes. All existing disk/headless tools continue working when the plugin is absent.
+The bridge is read-mostly. It exposes the active in-memory scene, current selection, open scenes, play state, and performance without permitting arbitrary method calls. Explicit play controls may trigger Godot's normal run-bar autosave behavior, so they are scheduled as project mutations and emit resource invalidation. All existing disk/headless tools continue working when the plugin is absent.
 
 ### VS Code / Copilot
 

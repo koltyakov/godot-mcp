@@ -19,6 +19,8 @@ test("getAllTools returns unique tool definitions", () => {
   assert.ok(names.includes("read_resource"));
   assert.ok(names.includes("update_resource"));
   assert.ok(names.includes("delete_resource"));
+  assert.ok(names.includes("control_editor_play"));
+  assert.ok(names.includes("get_editor_performance"));
   assert.equal(new Set(names).size, names.length);
 });
 
