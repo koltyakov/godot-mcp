@@ -4,12 +4,10 @@ import { notifyResourcesChanged } from "../notifications.js";
 import { invalidateProjectFileCatalog } from "../godot/finder.js";
 import { runWithExecutionContext } from "../execution-context.js";
 import { MutationScheduler } from "../godot/mutation-scheduler.js";
-import { canonicalizeProspectivePath } from "../godot/executor.js";
-import * as path from "node:path";
 import { listRegisteredProjects } from "../project-registry.js";
 import { invalidateDependencyGraph } from "../dependency-graph.js";
 import { resolveProjectPath } from "./project-context.js";
-import { normalizeAbsoluteProjectPath, normalizeResourcePath, SCENE_EXTENSIONS } from "./path-utils.js";
+import { normalizeAbsoluteProjectPath, resolveWritableProjectFilePath, SCENE_EXTENSIONS } from "./path-utils.js";
 
 import { sceneTools } from "./scene-tools.js";
 import { sceneExtTools } from "./scene-ext-tools.js";
@@ -88,21 +86,32 @@ export async function executeTool(
       ? normalizeAbsoluteProjectPath(args.project_path as string)
       : await resolveProjectPath(args);
     executionArgs = { ...args, project_path: projectPath };
-    const normalizedScenePath = sceneMutationTools.has(name)
-      ? normalizeResourcePath(args.scene_path as string, { fieldName: "scene_path", extensions: SCENE_EXTENSIONS })
+    const resolvedScene = sceneMutationTools.has(name)
+      ? await resolveWritableProjectFilePath(projectPath, args.scene_path as string, {
+        fieldName: "scene_path",
+        extensions: SCENE_EXTENSIONS,
+      })
       : undefined;
-    const scenePath = normalizedScenePath
-      ? await canonicalizeProspectivePath(path.resolve(projectPath, normalizedScenePath.slice("res://".length)))
-      : undefined;
+    if (resolvedScene) executionArgs = { ...executionArgs, scene_path: resolvedScene.resourcePath };
     // Once admitted, mutations run to completion so cancellation cannot kill
     // Godot during an on-disk commit. The scheduler still removes cancelled
     // requests while they are queued.
-    const unscheduledOperation = () => runWithExecutionContext(
-      { ...options, signal: undefined },
-      () => tool.execute(executionArgs, executor)
-    );
+    const unscheduledOperation = async () => {
+      let admittedArgs = executionArgs;
+      if (resolvedScene) {
+        const revalidatedScene = await resolveWritableProjectFilePath(projectPath, resolvedScene.resourcePath, {
+          fieldName: "scene_path",
+          extensions: SCENE_EXTENSIONS,
+        });
+        admittedArgs = { ...admittedArgs, scene_path: revalidatedScene.resourcePath };
+      }
+      return runWithExecutionContext(
+        { ...options, signal: undefined },
+        () => tool.execute(admittedArgs, executor)
+      );
+    };
     operation = () => mutationScheduler.run(
-      { projectPath, scenePath },
+      { projectPath, scenePath: resolvedScene?.fsPath },
       options.signal,
       unscheduledOperation
     );

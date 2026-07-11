@@ -1,7 +1,7 @@
 import type { ToolHandler } from "./types.js";
 import { readOnlyAnnotations } from "./types.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
-import { normalizeResourcePath, SCENE_EXTENSIONS } from "./path-utils.js";
+import { normalizeResourcePath, resolveExistingProjectFilePath, SCENE_EXTENSIONS } from "./path-utils.js";
 import { selectEditorBridge } from "../godot/bridge/discovery.js";
 import { callEditorBridge } from "../godot/bridge/client.js";
 import { executeGodotOperation } from "./godot-operation.js";
@@ -84,7 +84,11 @@ export const readEditorSceneTool: ToolHandler = {
       }
     }
     if (args.fallback_to_disk !== false && scenePath) {
-      const result = await executeGodotOperation(executor, projectPath, "read_scene", { scene_path: scenePath }, "Failed to read scene");
+      const resolved = await resolveExistingProjectFilePath(projectPath, scenePath, {
+        fieldName: "scene_path",
+        extensions: SCENE_EXTENSIONS,
+      });
+      const result = await executeGodotOperation(executor, projectPath, "read_scene", { scene_path: resolved.resourcePath }, "Failed to read scene");
       return { live: false, source: "disk", unsaved_changes_included: false, result };
     }
     throw new Error("No live editor bridge is available and no scene_path was provided for disk fallback");

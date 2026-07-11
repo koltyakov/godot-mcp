@@ -2,7 +2,7 @@ import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import { executeGodotOperation } from "./godot-operation.js";
-import { normalizeResourcePath, SCENE_EXTENSIONS, SCRIPT_EXTENSIONS } from "./path-utils.js";
+import { normalizeResourcePath, resolveExistingProjectFilePath, SCENE_EXTENSIONS, SCRIPT_EXTENSIONS } from "./path-utils.js";
 
 const AUTOLOAD_EXTENSIONS = [...SCRIPT_EXTENSIONS, ...SCENE_EXTENSIONS] as const;
 
@@ -85,6 +85,13 @@ export const checkScriptTool: ToolHandler = {
       })
       : "";
 
+    const resolvedScriptPath = scriptPath
+      ? (await resolveExistingProjectFilePath(projectPath, scriptPath, {
+        fieldName: "script_path",
+        extensions: SCRIPT_EXTENSIONS,
+      })).resourcePath
+      : "";
+
     if (!source && !scriptPath) {
       throw new Error("Provide 'source' (inline GDScript) or 'script_path' (existing file) to validate.");
     }
@@ -93,7 +100,7 @@ export const checkScriptTool: ToolHandler = {
       executor,
       projectPath,
       "compile_script",
-      { source, script_path: scriptPath },
+      { source, script_path: resolvedScriptPath },
       "Failed to compile script"
     );
   },
@@ -214,13 +221,17 @@ export const setAutoloadTool: ToolHandler = {
       fieldName: "path",
       extensions: AUTOLOAD_EXTENSIONS,
     });
+    const resolvedAutoload = await resolveExistingProjectFilePath(projectPath, autoloadPath, {
+      fieldName: "path",
+      extensions: AUTOLOAD_EXTENSIONS,
+    });
     const singleton = args.singleton !== undefined ? Boolean(args.singleton) : true;
 
     return executeGodotOperation(
       executor,
       projectPath,
       "set_autoload",
-      { name, path: autoloadPath, singleton },
+      { name, path: resolvedAutoload.resourcePath, singleton },
       "Failed to set autoload"
     );
   },

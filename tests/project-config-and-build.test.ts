@@ -61,6 +61,7 @@ test("check_script dispatches with source and script_path", async (t) => {
 
 test("check_script normalizes script_path when validating an existing file", async (t) => {
   const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "scripts", "player.gd"), "extends Node\n");
   let received: Record<string, unknown> = {};
   const executor = createMockGodotExecutor(async (_p, op, params) => {
     assert.equal(op, "compile_script");
@@ -75,6 +76,7 @@ test("check_script normalizes script_path when validating an existing file", asy
 
 test("get_project_settings, set_project_setting, list_autoloads, set_autoload, remove_autoload dispatch correctly", async (t) => {
   const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "globals.gd"), "extends Node\n");
   const calls: Array<{ op: string; params: Record<string, unknown> }> = [];
   const executor = createMockGodotExecutor(async (_p, op, params) => {
     calls.push({ op, params });
@@ -106,6 +108,7 @@ test("get_project_settings, set_project_setting, list_autoloads, set_autoload, r
 
 test("set_autoload honors singleton=false", async (t) => {
   const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "helper.gd"), "extends Node\n");
   let received: Record<string, unknown> = {};
   const executor = createMockGodotExecutor(async (_p, _op, params) => {
     received = params;

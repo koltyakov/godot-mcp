@@ -10,6 +10,7 @@ import { createGodotProject, createMockGodotExecutor, createTempDir, writeText }
 
 test("apply_scene_changes normalizes and forwards an ordered transaction", async (t) => {
   const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "scenes", "enemy.tscn"), "[gd_scene format=3]\n");
   const realProjectPath = await fs.realpath(projectPath);
   let received: { projectPath?: string; operation?: string; params?: Record<string, unknown> } = {};
   const executor = createMockGodotExecutor(async (pathValue, operation, params) => {
@@ -130,6 +131,7 @@ test("apply_scene_changes preserves structured conflict details", async (t) => {
 
 test("read_scene returns the structured Godot payload", async (t) => {
   const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "main.tscn"), "[gd_scene format=3]\n");
   const payload = {
     success: true,
     scene_path: "res://main.tscn",

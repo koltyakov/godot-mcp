@@ -12,6 +12,7 @@ import {
   SCENE_EXTENSIONS,
   SCRIPT_EXTENSIONS,
 } from "./path-utils.js";
+import { GodotOperationError } from "./godot-operation.js";
 
 async function fileSha256(filePath: string): Promise<string | null> {
   const content = await fs.readFile(filePath).catch((error: NodeJS.ErrnoException) => {
@@ -45,7 +46,10 @@ async function replaceFileAtomically(filePath: string, content: string, expected
     if (expectedSha256 !== undefined) {
       const currentSha256 = await fileSha256(filePath);
       if (currentSha256?.toLowerCase() !== expectedSha256.toLowerCase()) {
-        throw new Error(`Script changed since it was read (expected ${expectedSha256}, current ${currentSha256 ?? "missing"})`);
+        throw new GodotOperationError(
+          `Script changed since it was read (expected ${expectedSha256}, current ${currentSha256 ?? "missing"})`,
+          { expected_sha256: expectedSha256, current_sha256: currentSha256, rolled_back: true }
+        );
       }
     }
     await fs.rename(temporaryPath, filePath);
@@ -105,13 +109,17 @@ export const createScriptTool: ToolHandler = {
       fieldName: "script_path",
       extensions: SCRIPT_EXTENSIONS,
     });
+    const resolved = await resolveWritableProjectFilePath(projectPath, scriptPath, {
+      fieldName: "script_path",
+      extensions: SCRIPT_EXTENSIONS,
+    });
     const extendsType = (args.extends as string) || "Node";
     const className = args.class_name as string | undefined;
     const content = args.content as string | undefined;
     const template = (args.template as string) || "default";
 
     const result = await executor.execute(projectPath, "create_script", {
-      script_path: scriptPath,
+      script_path: resolved.resourcePath,
       extends: extendsType,
       class_name: className || "",
       content: content || "",
@@ -168,11 +176,15 @@ export const attachScriptTool: ToolHandler = {
       fieldName: "script_path",
       extensions: SCRIPT_EXTENSIONS,
     });
+    const resolvedScript = await resolveExistingProjectFilePath(projectPath, scriptPath, {
+      fieldName: "script_path",
+      extensions: SCRIPT_EXTENSIONS,
+    });
 
     const result = await executor.execute(projectPath, "attach_script", {
       scene_path: scenePath,
       node_path: nodePath,
-      script_path: scriptPath,
+      script_path: resolvedScript.resourcePath,
     });
 
     if (!result.success) {
@@ -275,13 +287,19 @@ export const editScriptTool: ToolHandler = {
         throw new Error("expected_sha256 must be a 64-character hexadecimal SHA-256");
       }
     }
-    await replaceFileAtomically(resolved.fsPath, content, expectedSha256 as string | undefined).catch((error) => {
+    await fs.mkdir(path.dirname(resolved.fsPath), { recursive: true });
+    const revalidated = await resolveWritableProjectFilePath(projectPath, resolved.resourcePath, {
+      fieldName: "script_path",
+      extensions: SCRIPT_EXTENSIONS,
+    });
+    await replaceFileAtomically(revalidated.fsPath, content, expectedSha256 as string | undefined).catch((error) => {
+      if (error instanceof GodotOperationError) throw error;
       throw new Error(`Failed to edit script: ${scriptPath} (${error instanceof Error ? error.message : String(error)})`);
     });
     return {
       success: true,
-      message: `Updated script at ${resolved.resourcePath}`,
-      script_path: resolved.resourcePath,
+      message: `Updated script at ${revalidated.resourcePath}`,
+      script_path: revalidated.resourcePath,
       sha256: sha256(content),
     };
   },

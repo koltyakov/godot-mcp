@@ -240,6 +240,10 @@ func _confirm_scene_saved(filepath: String, previous_sha256: String) -> void:
 		var current_sha256 := FileAccess.get_sha256(filepath)
 		save_confirmed = not current_sha256.is_empty() and current_sha256 != previous_sha256
 	if not save_confirmed:
+		var unconfirmed_history = get_undo_redo().get_history_undo_redo(int(history_id))
+		if unconfirmed_history != null:
+			_observed_versions[int(history_id)] = unconfirmed_history.get_version()
+		_saved_versions.erase(int(history_id))
 		return
 	_scene_disk_hashes[filepath] = FileAccess.get_sha256(filepath)
 	var history = get_undo_redo().get_history_undo_redo(int(history_id))

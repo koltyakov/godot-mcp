@@ -1,7 +1,7 @@
 import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
-import { normalizeResourcePath, SCENE_EXTENSIONS } from "./path-utils.js";
+import { normalizeResourcePath, resolveExistingProjectFilePath, SCENE_EXTENSIONS } from "./path-utils.js";
 import { executeGodotOperation } from "./godot-operation.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -204,6 +204,12 @@ export const addNodeTool: ToolHandler = {
       })
       : undefined;
     validateNodeSource(nodeType, instanceScenePath, true);
+    const resolvedInstanceScenePath = instanceScenePath
+      ? await resolveExistingProjectFilePath(projectPath, instanceScenePath, {
+        fieldName: "instance_scene_path",
+        extensions: SCENE_EXTENSIONS,
+      })
+      : undefined;
 
     const result = await executor.execute(projectPath, "add_node", {
       scene_path: scenePath,
@@ -211,7 +217,7 @@ export const addNodeTool: ToolHandler = {
       node_type: nodeType,
       node_name: nodeName,
       properties,
-      ...(instanceScenePath ? { instance_scene_path: instanceScenePath } : {}),
+      ...(resolvedInstanceScenePath ? { instance_scene_path: resolvedInstanceScenePath.resourcePath } : {}),
     });
 
     if (!result.success) {
@@ -272,7 +278,14 @@ export const applySceneChangesTool: ToolHandler = {
       fieldName: "scene_path",
       extensions: SCENE_EXTENSIONS,
     });
-    const changes = normalizeSceneChanges(args.changes);
+    const changes = await Promise.all(normalizeSceneChanges(args.changes).map(async (change, index) => {
+      if (typeof change.instance_scene_path !== "string") return change;
+      const resolvedInstance = await resolveExistingProjectFilePath(projectPath, change.instance_scene_path, {
+        fieldName: `changes[${index}].instance_scene_path`,
+        extensions: SCENE_EXTENSIONS,
+      });
+      return { ...change, instance_scene_path: resolvedInstance.resourcePath };
+    }));
     const expectedSha256 = args.expected_sha256;
     if (expectedSha256 !== undefined && (typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(expectedSha256))) {
       throw new Error("expected_sha256 must be a 64-character hexadecimal SHA-256");
@@ -417,12 +430,16 @@ export const readSceneTool: ToolHandler = {
       fieldName: "scene_path",
       extensions: SCENE_EXTENSIONS,
     });
+    const resolved = await resolveExistingProjectFilePath(projectPath, scenePath, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
 
     return executeGodotOperation(
       executor,
       projectPath,
       "read_scene",
-      { scene_path: scenePath },
+      { scene_path: resolved.resourcePath },
       "Failed to read scene"
     );
   },
@@ -456,9 +473,13 @@ export const listNodesTool: ToolHandler = {
       fieldName: "scene_path",
       extensions: SCENE_EXTENSIONS,
     });
+    const resolved = await resolveExistingProjectFilePath(projectPath, scenePath, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
 
     const result = await executor.execute(projectPath, "list_nodes", {
-      scene_path: scenePath,
+      scene_path: resolved.resourcePath,
     });
 
     if (!result.success) {

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { editScriptTool, readScriptTool } from "../src/tools/script-tools.js";
 import { executeTool } from "../src/tools/index.js";
+import { GodotOperationError } from "../src/tools/godot-operation.js";
 import { createGodotProject, createMockGodotExecutor, createTempDir } from "./helpers.js";
 
 test("editScriptTool and readScriptTool use the filesystem without spawning Godot", async (t) => {
@@ -62,6 +63,27 @@ test("editScriptTool rejects stale expected_sha256 values", async (t) => {
     /Script changed since it was read/
   );
   assert.equal(await fs.readFile(scriptPath, "utf-8"), "extends Node\n");
+});
+
+test("editScriptTool preserves structured conflict details", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await fs.writeFile(path.join(projectPath, "player.gd"), "extends Node\n");
+  const expectedSha256 = "0".repeat(64);
+
+  await assert.rejects(editScriptTool.execute({
+    project_path: projectPath,
+    script_path: "res://player.gd",
+    content: "extends Node2D\n",
+    expected_sha256: expectedSha256,
+  }, null), (error: unknown) => {
+    if (!(error instanceof GodotOperationError)) return false;
+    assert.deepEqual(error.details, {
+      expected_sha256: expectedSha256,
+      current_sha256: createHash("sha256").update("extends Node\n").digest("hex"),
+      rolled_back: true,
+    });
+    return true;
+  });
 });
 
 test("readScriptTool hashes the exact file bytes", async (t) => {

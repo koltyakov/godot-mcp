@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as path from "node:path";
 import test from "node:test";
 
 import { getAllTools } from "../src/tools/index.js";
@@ -11,7 +12,7 @@ import {
   disconnectSignalTool,
 } from "../src/tools/scene-ext-tools.js";
 import { addAnimationTrackTool } from "../src/tools/animation-tools.js";
-import { createGodotProject, createMockGodotExecutor } from "./helpers.js";
+import { createGodotProject, createMockGodotExecutor, writeText } from "./helpers.js";
 import { sceneTools } from "../src/tools/scene-tools.js";
 
 const newToolNames = [
@@ -175,6 +176,7 @@ test("add_node schema documents instance_scene_path for scene composition", () =
 
 test("add_node forwards instance_scene_path when provided", async (t) => {
   const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "scenes", "enemy.tscn"), "[gd_scene format=3]\n");
   let received: Record<string, unknown> = {};
   const executor = createMockGodotExecutor(async (_p, _op, params) => {
     received = params;

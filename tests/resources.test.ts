@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import test from "node:test";
 
 import { __testing } from "../src/resources/index.js";
+import { createGodotProject, createTempDir, writeText } from "./helpers.js";
 
-const { parseGodotUri, encodeResPath, GODOT_SCHEME } = __testing;
+const { parseGodotUri, encodeResPath, resolveSceneResourcePath, GODOT_SCHEME } = __testing;
 
 test("parseGodotUri recognizes the project summary URI", () => {
   assert.deepEqual(parseGodotUri("godot://project"), { kind: "project" });
@@ -59,4 +62,14 @@ test("encodeResPath percent-encodes the embedded res:// scheme", () => {
 
 test("GODOT_SCHEME includes the trailing colon used by URL.protocol", () => {
   assert.equal(GODOT_SCHEME, "godot:");
+});
+
+test("scene resources reject traversal and project-escaping symlinks", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const outsidePath = await createTempDir(t);
+  await writeText(path.join(outsidePath, "secret.tscn"), "[gd_scene format=3]\n");
+  await fs.symlink(outsidePath, path.join(projectPath, "linked"));
+
+  await assert.rejects(resolveSceneResourcePath(projectPath, "res://../secret.tscn"), /escapes project directory/);
+  await assert.rejects(resolveSceneResourcePath(projectPath, "res://linked/secret.tscn"), /escapes project directory/);
 });

@@ -10,6 +10,8 @@ import { projectSelectorProperties, resolveProjectPath } from "./project-context
 import {
   normalizeAbsoluteProjectPath,
   normalizeResourcePath,
+  resolveExistingProjectFilePath,
+  resolveWritableProjectFilePath,
   RESOURCE_EXTENSIONS,
   SCENE_EXTENSIONS,
 } from "./path-utils.js";
@@ -194,12 +196,18 @@ export const runProjectDiagnosticsTool: ToolHandler = {
     }
 
     const projectPath = await resolveProjectPath(args);
-    const scenePath = args.scene_path === undefined
+    let scenePath = args.scene_path === undefined
       ? undefined
       : normalizeResourcePath(args.scene_path as string, {
         fieldName: "scene_path",
         extensions: SCENE_EXTENSIONS,
       });
+    if (scenePath) {
+      scenePath = (await resolveExistingProjectFilePath(projectPath, scenePath, {
+        fieldName: "scene_path",
+        extensions: SCENE_EXTENSIONS,
+      })).resourcePath;
+    }
     const frames = boundedInteger(args.frames, 120, 1, 3600, "frames");
     const fixedFps = args.fixed_fps === undefined
       ? undefined
@@ -330,11 +338,15 @@ export const createResourceTool: ToolHandler = {
       fieldName: "resource_path",
       extensions: RESOURCE_EXTENSIONS,
     });
+    const resolved = await resolveWritableProjectFilePath(projectPath, resourcePath, {
+      fieldName: "resource_path",
+      extensions: RESOURCE_EXTENSIONS,
+    });
     const resourceType = args.resource_type as string;
     const properties = (args.properties as Record<string, unknown>) || {};
 
     const result = await executor.execute(projectPath, "create_resource", {
-      resource_path: resourcePath,
+      resource_path: resolved.resourcePath,
       resource_type: resourceType,
       properties,
     });

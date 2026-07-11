@@ -140,6 +140,7 @@ test("listScenesTool lists scenes without spawning Godot", async (t) => {
 
 test("runProjectDiagnosticsTool returns parsed runtime diagnostics", async (t) => {
   const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "scenes", "main.tscn"), "[gd_scene format=3]\n");
   const realProjectPath = await fs.realpath(projectPath);
   let receivedPath = "";
   let receivedOptions: Record<string, unknown> = {};

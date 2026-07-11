@@ -41,6 +41,12 @@ export async function validateGodotProjectPath(projectPath: string): Promise<str
     throw new Error(`Not a valid Godot project: ${projectPath}`);
   }
 
+  const projectFilePath = path.join(realProjectPath, "project.godot");
+  const projectFileStats = await fs.lstat(projectFilePath).catch(() => null);
+  if (!projectFileStats?.isFile() || projectFileStats.isSymbolicLink()) {
+    throw new Error(`Not a valid Godot project: project.godot must be a regular file (${projectPath})`);
+  }
+
   return realProjectPath;
 }
 
@@ -108,7 +114,7 @@ export async function resolveExistingProjectFilePath(
     throw new Error(`${options.fieldName ?? "resource path"} is not a file: ${resourcePath}`);
   }
 
-  return { fsPath: realPath, resourcePath: normalizedResourcePath };
+  return { fsPath: realPath, resourcePath: resPathFromCanonicalFile(projectPath, realPath) };
 }
 
 export async function resolveWritableProjectFilePath(
@@ -120,8 +126,8 @@ export async function resolveWritableProjectFilePath(
   const fsPath = path.resolve(projectPath, normalizedResourcePath.slice("res://".length));
   const parentPath = path.dirname(fsPath);
 
-  // Validate the nearest existing ancestor before creating directories so a
-  // parent symlink cannot redirect mkdir outside the project.
+  // Resolve the nearest existing ancestor without creating directories, so
+  // preflight remains side-effect-free and parent symlinks are canonicalized.
   let existingAncestor = parentPath;
   while (true) {
     const ancestorStats = await fs.lstat(existingAncestor).catch((error: NodeJS.ErrnoException) => {
@@ -145,15 +151,12 @@ export async function resolveWritableProjectFilePath(
     throw new Error(`${options.fieldName ?? "resource path"} escapes project directory: ${resourcePath}`);
   }
 
-  await fs.mkdir(parentPath, { recursive: true });
-
-  const realParentPath = await fs.realpath(parentPath);
-  if (!isPathInside(projectPath, realParentPath)) {
+  const prospectivePath = path.resolve(realAncestorPath, path.relative(existingAncestor, fsPath));
+  if (!isPathInside(projectPath, prospectivePath)) {
     throw new Error(`${options.fieldName ?? "resource path"} escapes project directory: ${resourcePath}`);
   }
-  const safeFsPath = path.join(realParentPath, path.basename(fsPath));
 
-  const existingStats = await fs.lstat(safeFsPath).catch((error: NodeJS.ErrnoException) => {
+  const existingStats = await fs.lstat(prospectivePath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") {
       return null;
     }
@@ -169,5 +172,10 @@ export async function resolveWritableProjectFilePath(
     throw new Error(`${options.fieldName ?? "resource path"} is not a file: ${resourcePath}`);
   }
 
-  return { fsPath: safeFsPath, resourcePath: normalizedResourcePath };
+  const safeFsPath = existingStats ? await fs.realpath(prospectivePath) : prospectivePath;
+  return { fsPath: safeFsPath, resourcePath: resPathFromCanonicalFile(projectPath, safeFsPath) };
+}
+
+function resPathFromCanonicalFile(projectPath: string, filePath: string): string {
+  return `res://${path.relative(projectPath, filePath).replace(/\\/g, "/")}`;
 }

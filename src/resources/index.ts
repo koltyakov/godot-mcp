@@ -90,7 +90,7 @@ function encodeResPath(resPath: string): string {
 }
 
 // Exported for unit tests.
-export const __testing = { parseGodotUri, encodeResPath, GODOT_SCHEME };
+export const __testing = { parseGodotUri, encodeResPath, resolveSceneResourcePath, GODOT_SCHEME };
 
 /**
  * Read a script file directly from disk. This avoids a headless Godot
@@ -102,6 +102,14 @@ async function readScriptText(projectPath: string, resPath: string): Promise<str
     extensions: SCRIPT_EXTENSIONS,
   });
   return fs.readFile(fsPath, "utf-8");
+}
+
+async function resolveSceneResourcePath(projectPath: string, resPath: string): Promise<string> {
+  const resolved = await resolveExistingProjectFilePath(projectPath, resPath, {
+    fieldName: "scene_path",
+    extensions: SCENE_EXTENSIONS,
+  });
+  return resolved.resourcePath;
 }
 
 async function refreshOpenProjectRegistry(): Promise<void> {
@@ -255,18 +263,18 @@ export function setupResourceHandlers(
         return jsonTextResource(uri, info);
       }
       case "scene": {
-        // Validate extension explicitly since the template accepts any string.
-        if (!SCENE_EXTENSIONS.some((ext) => parsed.resPath.toLowerCase().endsWith(ext))) {
-          return errorResource(
-            uri,
-            `Scene resource path must end with ${SCENE_EXTENSIONS.join(" or ")}: ${parsed.resPath}`
-          );
+        let scenePath: string;
+        try {
+          scenePath = await resolveSceneResourcePath(projectPath, parsed.resPath);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return errorResource(uri, `Failed to read scene: ${message}`);
         }
         const tree = await executeGodotOperation(
           executor,
           projectPath,
           "read_scene",
-          { scene_path: parsed.resPath },
+          { scene_path: scenePath },
           "Failed to read scene"
         );
         return jsonTextResource(uri, tree);
