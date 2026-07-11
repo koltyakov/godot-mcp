@@ -2,7 +2,7 @@ import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { findScriptFiles } from "../godot/finder.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import {
@@ -13,7 +13,17 @@ import {
   SCRIPT_EXTENSIONS,
 } from "./path-utils.js";
 
-async function replaceFileAtomically(filePath: string, content: string): Promise<void> {
+async function fileSha256(filePath: string): Promise<string | null> {
+  const content = await fs.readFile(filePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  });
+  return content === null ? null : sha256(content);
+}
+
+async function replaceFileAtomically(filePath: string, content: string, expectedSha256?: string): Promise<void> {
   const stats = await fs.stat(filePath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") {
       return null;
@@ -32,10 +42,20 @@ async function replaceFileAtomically(filePath: string, content: string): Promise
     } finally {
       await file.close();
     }
+    if (expectedSha256 !== undefined) {
+      const currentSha256 = await fileSha256(filePath);
+      if (currentSha256?.toLowerCase() !== expectedSha256.toLowerCase()) {
+        throw new Error(`Script changed since it was read (expected ${expectedSha256}, current ${currentSha256 ?? "missing"})`);
+      }
+    }
     await fs.rename(temporaryPath, filePath);
   } finally {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
   }
+}
+
+function sha256(content: string | Uint8Array): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 // Create Script Tool
@@ -194,14 +214,16 @@ export const readScriptTool: ToolHandler = {
     }).catch((error) => {
       throw new Error(`Failed to read script: ${scriptPath} (${error instanceof Error ? error.message : String(error)})`);
     });
-    const content = await fs.readFile(resolved.fsPath, "utf-8").catch((error) => {
+    const bytes = await fs.readFile(resolved.fsPath).catch((error) => {
       throw new Error(`Failed to read script: ${scriptPath} (${error instanceof Error ? error.message : String(error)})`);
     });
+    const content = bytes.toString("utf-8");
     return {
       success: true,
       script_path: resolved.resourcePath,
       content,
       line_count: content.split("\n").length,
+      sha256: sha256(bytes),
     };
   },
 };
@@ -223,6 +245,10 @@ export const editScriptTool: ToolHandler = {
           type: "string",
           description: "New content for the script file",
         },
+        expected_sha256: {
+          type: "string",
+          description: "Optional SHA-256 returned by read_script. The edit checks it again immediately before replacing the file.",
+        },
       },
       required: ["script_path", "content"],
     },
@@ -243,13 +269,20 @@ export const editScriptTool: ToolHandler = {
     }).catch((error) => {
       throw new Error(`Failed to edit script: ${scriptPath} (${error instanceof Error ? error.message : String(error)})`);
     });
-    await replaceFileAtomically(resolved.fsPath, content).catch((error) => {
+    const expectedSha256 = args.expected_sha256;
+    if (expectedSha256 !== undefined) {
+      if (typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(expectedSha256)) {
+        throw new Error("expected_sha256 must be a 64-character hexadecimal SHA-256");
+      }
+    }
+    await replaceFileAtomically(resolved.fsPath, content, expectedSha256 as string | undefined).catch((error) => {
       throw new Error(`Failed to edit script: ${scriptPath} (${error instanceof Error ? error.message : String(error)})`);
     });
     return {
       success: true,
       message: `Updated script at ${resolved.resourcePath}`,
       script_path: resolved.resourcePath,
+      sha256: sha256(content),
     };
   },
 };

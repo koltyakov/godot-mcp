@@ -27,10 +27,10 @@ export function toolSuccessResponse(result: unknown) {
   };
 }
 
-export function toolErrorResponse(message: string) {
+export function toolErrorResponse(message: string, details?: unknown) {
   return {
     content: [{ type: "text" as const, text: `Error: ${message}` }],
-    structuredContent: { error: { message } },
+    structuredContent: { error: { message, ...(details === undefined ? {} : { details }) } },
     isError: true,
   };
 }

@@ -1,5 +1,12 @@
 import type { GodotExecutor } from "../godot/executor.js";
 
+export class GodotOperationError extends Error {
+  constructor(message: string, readonly details?: unknown) {
+    super(message);
+    this.name = "GodotOperationError";
+  }
+}
+
 export async function executeGodotOperation(
   executor: GodotExecutor | null,
   projectPath: string,
@@ -13,7 +20,7 @@ export async function executeGodotOperation(
 
   const result = await executor.execute(projectPath, operation, params);
   if (!result.success) {
-    throw new Error(result.error || failureMessage);
+    throw new GodotOperationError(result.error || failureMessage, result.data);
   }
 
   if (result.data !== undefined) {

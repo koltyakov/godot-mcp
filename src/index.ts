@@ -9,6 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { getAllTools, executeTool } from "./tools/index.js";
+import { GodotOperationError } from "./tools/godot-operation.js";
 import { GodotExecutor } from "./godot/executor.js";
 import { findGodotPath } from "./godot/finder.js";
 import { setupResourceHandlers } from "./resources/index.js";
@@ -125,7 +126,7 @@ function setupHandlers(): void {
       return toolSuccessResponse(result);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return toolErrorResponse(errorMessage);
+      return toolErrorResponse(errorMessage, error instanceof GodotOperationError ? error.details : undefined);
     }
   });
 }

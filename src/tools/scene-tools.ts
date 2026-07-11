@@ -257,6 +257,10 @@ export const applySceneChangesTool: ToolHandler = {
             additionalProperties: false,
           },
         },
+        expected_sha256: {
+          type: "string",
+          description: "Optional SHA-256 returned by read_scene. It is checked before preparing and immediately before committing changes.",
+        },
       },
       required: ["scene_path", "changes"],
     },
@@ -269,12 +273,16 @@ export const applySceneChangesTool: ToolHandler = {
       extensions: SCENE_EXTENSIONS,
     });
     const changes = normalizeSceneChanges(args.changes);
+    const expectedSha256 = args.expected_sha256;
+    if (expectedSha256 !== undefined && (typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(expectedSha256))) {
+      throw new Error("expected_sha256 must be a 64-character hexadecimal SHA-256");
+    }
 
     return executeGodotOperation(
       executor,
       projectPath,
       "apply_scene_changes",
-      { scene_path: scenePath, changes },
+      { scene_path: scenePath, changes, ...(expectedSha256 ? { expected_sha256: expectedSha256 } : {}) },
       "Failed to apply scene changes"
     );
   },
@@ -410,15 +418,13 @@ export const readSceneTool: ToolHandler = {
       extensions: SCENE_EXTENSIONS,
     });
 
-    const result = await executor.execute(projectPath, "read_scene", {
-      scene_path: scenePath,
-    });
-
-    if (!result.success) {
-      throw new Error(result.error || "Failed to read scene");
-    }
-
-    return result.output;
+    return executeGodotOperation(
+      executor,
+      projectPath,
+      "read_scene",
+      { scene_path: scenePath },
+      "Failed to read scene"
+    );
   },
 };
 

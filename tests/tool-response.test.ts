@@ -22,3 +22,10 @@ test("toolErrorResponse provides a structured error", () => {
     isError: true,
   });
 });
+
+test("toolErrorResponse preserves structured operation details", () => {
+  const details = { expected_sha256: "0".repeat(64), current_sha256: "1".repeat(64), rolled_back: true };
+  const response = toolErrorResponse("conflict", details);
+
+  assert.deepEqual(response.structuredContent, { error: { message: "conflict", details } });
+});

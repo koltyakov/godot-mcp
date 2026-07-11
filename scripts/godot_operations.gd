@@ -343,10 +343,20 @@ func _modify_node(params: Dictionary) -> Dictionary:
 func _apply_scene_changes(params: Dictionary) -> Dictionary:
 	var scene_path = String(params.get("scene_path", ""))
 	var changes = params.get("changes", [])
+	var expected_sha256 = String(params.get("expected_sha256", ""))
 	if scene_path.is_empty():
 		return {"success": false, "error": "scene_path is required"}
 	if typeof(changes) != TYPE_ARRAY or changes.is_empty() or changes.size() > 100:
 		return {"success": false, "error": "changes must contain between 1 and 100 operations"}
+	var previous_sha256 = FileAccess.get_sha256(scene_path)
+	if not expected_sha256.is_empty() and previous_sha256.to_lower() != expected_sha256.to_lower():
+		return {
+			"success": false,
+			"error": "Scene changed since it was read (expected " + expected_sha256 + ", current " + previous_sha256 + ")",
+			"expected_sha256": expected_sha256,
+			"current_sha256": previous_sha256,
+			"rolled_back": true,
+		}
 
 	var packed_scene = load(scene_path) as PackedScene
 	if packed_scene == null:
@@ -389,7 +399,7 @@ func _apply_scene_changes(params: Dictionary) -> Dictionary:
 	if pack_result != OK:
 		scene_root.queue_free()
 		return {"success": false, "error": "Failed to pack scene: " + str(pack_result), "rolled_back": true}
-	var save_result = _save_scene_transactionally(new_packed_scene, scene_path)
+	var save_result = _save_scene_transactionally(new_packed_scene, scene_path, previous_sha256)
 	scene_root.queue_free()
 	if not save_result.get("success", false):
 		return save_result
@@ -400,10 +410,12 @@ func _apply_scene_changes(params: Dictionary) -> Dictionary:
 		"scene_path": scene_path,
 		"applied_count": changes.size(),
 		"results": results,
+		"previous_sha256": previous_sha256,
+		"sha256": save_result.get("sha256", ""),
 	}
 
 
-func _save_scene_transactionally(packed_scene: PackedScene, scene_path: String) -> Dictionary:
+func _save_scene_transactionally(packed_scene: PackedScene, scene_path: String, expected_sha256: String) -> Dictionary:
 	var extension = scene_path.get_extension()
 	var file_stem = scene_path.get_file().trim_suffix("." + extension)
 	var token = str(OS.get_process_id()) + "-" + str(Time.get_ticks_usec())
@@ -414,6 +426,17 @@ func _save_scene_transactionally(packed_scene: PackedScene, scene_path: String) 
 
 	var original_absolute = ProjectSettings.globalize_path(scene_path)
 	var temporary_absolute = ProjectSettings.globalize_path(temporary_path)
+	var saved_sha256 = FileAccess.get_sha256(temporary_path)
+	var current_sha256 = FileAccess.get_sha256(scene_path)
+	if current_sha256.to_lower() != expected_sha256.to_lower():
+		DirAccess.remove_absolute(temporary_absolute)
+		return {
+			"success": false,
+			"error": "Scene changed while changes were being prepared (expected " + expected_sha256 + ", current " + current_sha256 + ")",
+			"expected_sha256": expected_sha256,
+			"current_sha256": current_sha256,
+			"rolled_back": true,
+		}
 	var commit_error = DirAccess.rename_absolute(temporary_absolute, original_absolute)
 	if commit_error != OK:
 		DirAccess.remove_absolute(temporary_absolute)
@@ -423,7 +446,7 @@ func _save_scene_transactionally(packed_scene: PackedScene, scene_path: String) 
 			"rolled_back": true,
 		}
 
-	return {"success": true}
+	return {"success": true, "sha256": saved_sha256}
 
 
 func _apply_scene_change(scene_root: Node, change: Dictionary) -> Dictionary:
@@ -594,6 +617,7 @@ func _read_scene(params: Dictionary) -> Dictionary:
 	if scene_path.is_empty():
 		return {"success": false, "error": "scene_path is required"}
 	
+	var initial_sha256 = FileAccess.get_sha256(scene_path)
 	var packed_scene = load(scene_path) as PackedScene
 	if packed_scene == null:
 		return {"success": false, "error": "Failed to load scene: " + scene_path}
@@ -601,11 +625,20 @@ func _read_scene(params: Dictionary) -> Dictionary:
 	var scene_root = packed_scene.instantiate()
 	var tree_structure = _serialize_node_tree(scene_root)
 	scene_root.queue_free()
+	var final_sha256 = FileAccess.get_sha256(scene_path)
+	if initial_sha256 != final_sha256:
+		return {
+			"success": false,
+			"error": "Scene changed while it was being read; retry the operation",
+			"initial_sha256": initial_sha256,
+			"current_sha256": final_sha256,
+		}
 	
 	return {
 		"success": true,
 		"scene_path": scene_path,
-		"tree": tree_structure
+		"tree": tree_structure,
+		"sha256": initial_sha256,
 	}
 
 

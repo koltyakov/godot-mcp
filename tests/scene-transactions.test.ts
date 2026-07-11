@@ -4,7 +4,8 @@ import * as path from "node:path";
 import test from "node:test";
 
 import { GodotExecutor } from "../src/godot/executor.js";
-import { applySceneChangesTool } from "../src/tools/scene-tools.js";
+import { GodotOperationError } from "../src/tools/godot-operation.js";
+import { applySceneChangesTool, readSceneTool } from "../src/tools/scene-tools.js";
 import { createGodotProject, createMockGodotExecutor, createTempDir, writeText } from "./helpers.js";
 
 test("apply_scene_changes normalizes and forwards an ordered transaction", async (t) => {
@@ -69,6 +70,15 @@ test("apply_scene_changes rejects invalid transactions before spawning Godot", a
   });
 
   await assert.rejects(
+    applySceneChangesTool.execute({
+      project_path: projectPath,
+      scene_path: "main.tscn",
+      changes: [{ operation: "remove_node", node_path: "Child" }],
+      expected_sha256: "invalid",
+    }, executor),
+    /expected_sha256 must be/
+  );
+  await assert.rejects(
     applySceneChangesTool.execute({ project_path: projectPath, scene_path: "main.tscn", changes: [] }, executor),
     /between 1 and 100/
   );
@@ -89,6 +99,53 @@ test("apply_scene_changes rejects invalid transactions before spawning Godot", a
     /cannot remove the scene root/
   );
   assert.equal(calls, 0);
+});
+
+test("apply_scene_changes preserves structured conflict details", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const conflict = {
+    success: false,
+    error: "Scene changed since it was read",
+    expected_sha256: "0".repeat(64),
+    current_sha256: "1".repeat(64),
+    rolled_back: true,
+  };
+  const executor = createMockGodotExecutor(async () => ({
+    success: false,
+    output: "",
+    error: conflict.error,
+    data: conflict,
+  }));
+
+  await assert.rejects(
+    applySceneChangesTool.execute({
+      project_path: projectPath,
+      scene_path: "main.tscn",
+      changes: [{ operation: "remove_node", node_path: "Child" }],
+      expected_sha256: conflict.expected_sha256,
+    }, executor),
+    (error: unknown) => error instanceof GodotOperationError && error.details === conflict
+  );
+});
+
+test("read_scene returns the structured Godot payload", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const payload = {
+    success: true,
+    scene_path: "res://main.tscn",
+    tree: { name: "Main", type: "Node" },
+    sha256: "a".repeat(64),
+  };
+  const executor = createMockGodotExecutor(async () => ({
+    success: true,
+    output: JSON.stringify(payload),
+    data: payload,
+  }));
+
+  assert.equal(await readSceneTool.execute({
+    project_path: projectPath,
+    scene_path: "main.tscn",
+  }, executor), payload);
 });
 
 test("GodotExecutor serializes mutations targeting the same scene", async (t) => {
