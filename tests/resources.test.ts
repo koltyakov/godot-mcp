@@ -9,6 +9,17 @@ test("parseGodotUri recognizes the project summary URI", () => {
   assert.deepEqual(parseGodotUri("godot://project"), { kind: "project" });
 });
 
+test("parseGodotUri recognizes project-qualified resources", () => {
+  const projectId = "a".repeat(24);
+  assert.deepEqual(parseGodotUri(`godot://project/${projectId}`), { kind: "project", projectId });
+  assert.deepEqual(parseGodotUri(`godot://scene/${projectId}/${encodeResPath("res://main.tscn")}`), {
+    kind: "scene",
+    projectId,
+    resPath: "res://main.tscn",
+  });
+  assert.deepEqual(parseGodotUri("godot://projects"), { kind: "projects" });
+});
+
 test("parseGodotUri decodes a percent-encoded scene res:// path", () => {
   const encoded = `godot://scene/${encodeResPath("res://scenes/main.tscn")}`;
   assert.deepEqual(parseGodotUri(encoded), {

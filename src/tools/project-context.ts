@@ -1,6 +1,7 @@
 import * as path from "path";
 import { findOpenGodotProjects, type OpenGodotProject } from "../godot/finder.js";
 import { validateGodotProjectPath } from "./path-utils.js";
+import { getRegisteredProject, registerProject } from "../project-registry.js";
 
 type OpenProjectProvider = () => Promise<OpenGodotProject[]>;
 
@@ -12,6 +13,10 @@ export const projectSelectorProperties = {
   project_name: {
     type: "string",
     description: "Name of an open Godot project to use when multiple projects are open.",
+  },
+  project_id: {
+    type: "string",
+    description: "Stable project ID returned by list_open_projects or project-qualified godot:// resources.",
   },
 };
 
@@ -43,13 +48,25 @@ export async function resolveProjectPath(
   args: Record<string, unknown>,
   openProjectProvider: OpenProjectProvider = findOpenGodotProjects
 ): Promise<string> {
+  const projectId = args.project_id;
+  if (projectId !== undefined && projectId !== null) {
+    if (typeof projectId !== "string" || projectId.trim() === "") {
+      throw new Error("project_id must be a non-empty string");
+    }
+    const registered = getRegisteredProject(projectId);
+    if (!registered) throw new Error(`Unknown project_id: ${projectId}`);
+    return validateGodotProjectPath(registered.project_path);
+  }
+
   const explicitPath = args.project_path;
   if (explicitPath !== undefined && explicitPath !== null) {
     if (typeof explicitPath !== "string" || explicitPath.trim() === "") {
       throw new Error("project_path must be a non-empty string");
     }
 
-    return validateGodotProjectPath(explicitPath);
+    const validated = await validateGodotProjectPath(explicitPath);
+    await registerProject(validated);
+    return validated;
   }
 
   const requestedName = typeof args.project_name === "string" ? args.project_name.trim() : "";
@@ -62,7 +79,9 @@ export async function resolveProjectPath(
       : openProjects.filter((project) => matchesProjectName(project, requestedName, false));
 
     if (matches.length === 1) {
-      return validateOpenProjectSelection(matches[0]);
+      const validated = await validateOpenProjectSelection(matches[0]);
+      await registerProject(validated);
+      return validated;
     }
 
     if (matches.length === 0) {
@@ -73,7 +92,9 @@ export async function resolveProjectPath(
   }
 
   if (openProjects.length === 1) {
-    return validateOpenProjectSelection(openProjects[0]);
+    const validated = await validateOpenProjectSelection(openProjects[0]);
+    await registerProject(validated);
+    return validated;
   }
 
   if (openProjects.length === 0) {

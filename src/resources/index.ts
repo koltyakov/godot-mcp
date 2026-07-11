@@ -1,4 +1,5 @@
 import * as fs from "fs/promises";
+import * as path from "node:path";
 
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
@@ -8,7 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import type { GodotExecutor } from "../godot/executor.js";
-import { findSceneFiles, findScriptFiles } from "../godot/finder.js";
+import { findOpenGodotProjects, findSceneFiles, findScriptFiles } from "../godot/finder.js";
 import { executeGodotOperation } from "../tools/godot-operation.js";
 import { resolveProjectPath } from "../tools/project-context.js";
 import {
@@ -18,6 +19,7 @@ import {
 } from "../tools/path-utils.js";
 import { log } from "../logger.js";
 import { runWithExecutionContext } from "../execution-context.js";
+import { getRegisteredProject, listRegisteredProjects, registerProject } from "../project-registry.js";
 
 /**
  * Custom URI scheme used for Godot resources. Resolvable targets:
@@ -31,16 +33,17 @@ import { runWithExecutionContext } from "../execution-context.js";
  */
 export const GODOT_SCHEME = "godot:";
 
-const PROJECT_INFO_URI = "godot://project";
-const SCENE_TEMPLATE_URI = "godot://scene/{path}";
-const SCRIPT_TEMPLATE_URI = "godot://script/{path}";
+const PROJECTS_URI = "godot://projects";
+const SCENE_TEMPLATE_URI = "godot://scene/{project_id}/{path}";
+const SCRIPT_TEMPLATE_URI = "godot://script/{project_id}/{path}";
 
 type ResourceAudience = "user" | "assistant";
 
 type ParsedGodotUri =
-  | { kind: "project" }
-  | { kind: "scene"; resPath: string }
-  | { kind: "script"; resPath: string }
+  | { kind: "projects" }
+  | { kind: "project"; projectId?: string }
+  | { kind: "scene"; projectId?: string; resPath: string }
+  | { kind: "script"; projectId?: string; resPath: string }
   | null;
 
 function audience(...a: ResourceAudience[]) {
@@ -61,21 +64,22 @@ function parseGodotUri(uri: string): ParsedGodotUri {
 
   const host = parsed.hostname;
   // pathname always begins with "/"; decode to recover the res:// value.
-  const rawPath = parsed.pathname.replace(/^\//, "");
-  let decodedPath: string;
-  try {
-    decodedPath = decodeURIComponent(rawPath);
-  } catch {
-    decodedPath = rawPath;
-  }
+  const segments = parsed.pathname.replace(/^\//, "").split("/").filter(Boolean);
+  const decode = (value: string): string => {
+    try { return decodeURIComponent(value); } catch { return value; }
+  };
 
   switch (host) {
+    case "projects":
+      return segments.length === 0 ? { kind: "projects" } : null;
     case "project":
-      return { kind: "project" };
+      return segments.length <= 1 ? { kind: "project", ...(segments[0] ? { projectId: segments[0] } : {}) } : null;
     case "scene":
-      return decodedPath ? { kind: "scene", resPath: decodedPath } : null;
+      if (segments.length === 1) return { kind: "scene", resPath: decode(segments[0]) };
+      return segments.length === 2 ? { kind: "scene", projectId: segments[0], resPath: decode(segments[1]) } : null;
     case "script":
-      return decodedPath ? { kind: "script", resPath: decodedPath } : null;
+      if (segments.length === 1) return { kind: "script", resPath: decode(segments[0]) };
+      return segments.length === 2 ? { kind: "script", projectId: segments[0], resPath: decode(segments[1]) } : null;
     default:
       return null;
   }
@@ -98,6 +102,22 @@ async function readScriptText(projectPath: string, resPath: string): Promise<str
     extensions: SCRIPT_EXTENSIONS,
   });
   return fs.readFile(fsPath, "utf-8");
+}
+
+async function refreshOpenProjectRegistry(): Promise<void> {
+  const openProjects = await findOpenGodotProjects().catch(() => []);
+  await Promise.all(openProjects.map((project) => registerProject(project.project_path)));
+}
+
+async function resolveResourceProject(projectId?: string): Promise<string> {
+  if (!projectId) return resolveProjectPath({});
+  let registered = getRegisteredProject(projectId);
+  if (!registered) {
+    await refreshOpenProjectRegistry();
+    registered = getRegisteredProject(projectId);
+  }
+  if (!registered) throw new Error(`Unknown project ID: ${projectId}`);
+  return registered.project_path;
 }
 
 function jsonTextResource(uri: string, payload: unknown) {
@@ -135,14 +155,14 @@ export function setupResourceHandlers(
           uriTemplate: SCENE_TEMPLATE_URI,
           name: "Godot scene",
           description:
-            "Read the serialized node tree of a Godot scene. Replace {path} with a percent-encoded res:// path (e.g. res%3A%2F%2Fscenes%2Fmain.tscn).",
+            "Read a serialized scene tree pinned to {project_id}. Replace {path} with a percent-encoded res:// path.",
           mimeType: "application/json",
         },
         {
           uriTemplate: SCRIPT_TEMPLATE_URI,
           name: "GDScript source",
           description:
-            "Read the source of a GDScript file. Replace {path} with a percent-encoded res:// path (e.g. res%3A%2F%2Fscripts%2Fplayer.gd).",
+            "Read GDScript source pinned to {project_id}. Replace {path} with a percent-encoded res:// path.",
           mimeType: "text/x-gdscript",
         },
       ],
@@ -150,18 +170,8 @@ export function setupResourceHandlers(
   });
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    let projectPath: string;
-    try {
-      projectPath = await resolveProjectPath({});
-    } catch (error) {
-      // No single resolvable project. Surface only the project-info pointer so
-      // clients still know the server exists; templates remain available too.
-      await log("debug", "godot-mcp.resources", {
-        message: "ListResources: no default project resolved",
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return { resources: [] };
-    }
+    await refreshOpenProjectRegistry();
+    const registeredProjects = listRegisteredProjects();
 
     const resources: Array<{
       uri: string;
@@ -171,34 +181,36 @@ export function setupResourceHandlers(
       annotations?: ReturnType<typeof audience>;
     }> = [
       {
-        uri: PROJECT_INFO_URI,
-        name: "Godot project info",
-        description:
-          "Active project metadata: name, main scene, engine version, scene/script counts.",
+        uri: PROJECTS_URI,
+        name: "Registered Godot projects",
+        description: "Stable IDs and canonical paths for all discovered or explicitly selected projects.",
         mimeType: "application/json",
         annotations: audience("assistant", "user"),
       },
     ];
 
-    const [scenes, scripts] = await Promise.all([
-      findSceneFiles(projectPath).catch(() => [] as string[]),
-      findScriptFiles(projectPath).catch(() => [] as string[]),
-    ]);
-
-    for (const scenePath of scenes) {
+    for (const project of registeredProjects) {
       resources.push({
-        uri: `godot://scene/${encodeResPath(scenePath)}`,
-        name: scenePath,
+        uri: `godot://project/${project.project_id}`,
+        name: `${path.basename(project.project_path)} project info`,
+        description: `Project metadata for ${project.project_path}`,
+        mimeType: "application/json",
+        annotations: audience("assistant", "user"),
+      });
+      const [scenes, scripts] = await Promise.all([
+        findSceneFiles(project.project_path).catch(() => [] as string[]),
+        findScriptFiles(project.project_path).catch(() => [] as string[]),
+      ]);
+      for (const scenePath of scenes) resources.push({
+        uri: `godot://scene/${project.project_id}/${encodeResPath(scenePath)}`,
+        name: `${path.basename(project.project_path)}: ${scenePath}`,
         description: `Scene tree for ${scenePath}`,
         mimeType: "application/json",
         annotations: audience("assistant"),
       });
-    }
-
-    for (const scriptPath of scripts) {
-      resources.push({
-        uri: `godot://script/${encodeResPath(scriptPath)}`,
-        name: scriptPath,
+      for (const scriptPath of scripts) resources.push({
+        uri: `godot://script/${project.project_id}/${encodeResPath(scriptPath)}`,
+        name: `${path.basename(project.project_path)}: ${scriptPath}`,
         description: `GDScript source for ${scriptPath}`,
         mimeType: "text/x-gdscript",
         annotations: audience("assistant"),
@@ -218,9 +230,14 @@ export function setupResourceHandlers(
       return errorResource(uri, `Unsupported Godot resource URI: ${uri}`);
     }
 
+    if (parsed.kind === "projects") {
+      await refreshOpenProjectRegistry();
+      return jsonTextResource(uri, { projects: listRegisteredProjects() });
+    }
+
     let projectPath: string;
     try {
-      projectPath = await resolveProjectPath({});
+      projectPath = await resolveResourceProject(parsed.projectId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return errorResource(uri, `Cannot resolve a Godot project: ${message}`);

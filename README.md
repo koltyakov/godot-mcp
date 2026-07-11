@@ -81,9 +81,11 @@ The server advertises the standard MCP capabilities and uses them alongside the 
 
 - **`tools`** — every tool is annotated with `readOnlyHint`, `destructiveHint`, `idempotentHint`, or `openWorldHint` (per the MCP spec) so clients can show appropriate confirmation prompts and badges. Mutation tools emit `notifications/resources/list_changed` after a successful change.
 - **`resources`** (with `listChanged`) — read-only Godot content is exposed as resources under the `godot://` URI scheme:
-  - `godot://project` — active project metadata as JSON.
-  - `godot://scene/{path}` — serialized node tree of a scene; `{path}` is a percent-encoded `res://` path (e.g. `godot://scene/res%3A%2F%2Fscenes%2Fmain.tscn`). Listed automatically when a project is resolvable.
-  - `godot://script/{path}` — GDScript source; read directly from disk so it does not spawn a Godot process. Listed automatically.
+  - `godot://projects` — registered projects and their stable IDs.
+  - `godot://project/{project_id}` — metadata pinned to one canonical project.
+  - `godot://scene/{project_id}/{path}` — serialized node tree pinned to a project; `{path}` is a percent-encoded `res://` path.
+  - `godot://script/{project_id}/{path}` — project-pinned GDScript source, read without spawning Godot.
+  Legacy unqualified URIs remain readable when exactly one project is resolvable, but are no longer listed.
   Templates are exposed via `resources/templates/list` so clients can populate a resource picker.
 - **`prompts`** — workflow templates: `new-2d-player`, `new-3d-player`, `gdscript-conventions`, and `audit-scene`.
 - **`logging`** — diagnostic logs (headless spawn timing, parse warnings, non-zero exits) are streamed as `notifications/message`. Clients can change verbosity with `logging/setLevel`.

@@ -2,6 +2,7 @@ import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { findOpenGodotProjects, findSceneFiles } from "../godot/finder.js";
 import { parseGodotDiagnostics } from "../godot/diagnostics.js";
+import { registerProject } from "../project-registry.js";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { executeGodotOperation } from "./godot-operation.js";
@@ -253,10 +254,14 @@ export const listOpenProjectsTool: ToolHandler = {
   },
   async execute(_args, _executor) {
     const projects = await findOpenGodotProjects();
+    const projectsWithIds = await Promise.all(projects.map(async (project) => ({
+      ...project,
+      project_id: (await registerProject(project.project_path)).project_id,
+    })));
     return {
-      projects,
-      count: projects.length,
-      default_project: projects.length === 1 ? projects[0] : null,
+      projects: projectsWithIds,
+      count: projectsWithIds.length,
+      default_project: projectsWithIds.length === 1 ? projectsWithIds[0] : null,
     };
   },
 };
@@ -467,10 +472,12 @@ renderer/rendering_method="${renderer}"
       await fs.writeFile(path.join(projectPath, dir, ".gitkeep"), "", "utf-8");
     }
 
+    const registeredProject = await registerProject(projectPath);
     return {
       success: true,
       message: `Created new Godot project "${projectName}" at ${projectPath}`,
       project_path: projectPath,
+      project_id: registeredProject.project_id,
       created_directories: dirs,
     };
   },

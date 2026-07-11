@@ -4,6 +4,7 @@ import test from "node:test";
 import { executeTool } from "../src/tools/index.js";
 import { setResourceListChangedNotifier, notifyResourcesChanged } from "../src/notifications.js";
 import { createGodotProject, createMockGodotExecutor } from "./helpers.js";
+import { registerProject } from "../src/project-registry.js";
 
 test("executeTool emits resources/list_changed for destructive tools", async (t) => {
   const projectPath = await createGodotProject(t);
@@ -36,6 +37,7 @@ test("executeTool emits resources/list_changed for destructive tools", async (t)
 
 test("executeTool does NOT notify for read-only tools", async (t) => {
   const projectPath = await createGodotProject(t);
+  await registerProject(projectPath);
 
   let notifyCalls = 0;
   setResourceListChangedNotifier(async () => {
@@ -57,6 +59,7 @@ test("executeTool does NOT notify for read-only tools", async (t) => {
 
 test("executeTool does NOT rescan resources for open-world runtime tools", async (t) => {
   const projectPath = await createGodotProject(t);
+  await registerProject(projectPath);
   let notifyCalls = 0;
   setResourceListChangedNotifier(async () => {
     notifyCalls += 1;

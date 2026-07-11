@@ -28,8 +28,10 @@ test("initProjectTool creates a project file and standard directories", async (t
     success: true,
     message: `Created new Godot project "Quoted \"Game\"" at ${projectPath}`,
     project_path: projectPath,
+    project_id: (result as Record<string, unknown>).project_id,
     created_directories: ["scenes", "scripts", "resources", "assets"],
   });
+  assert.match((result as Record<string, string>).project_id, /^[a-f0-9]{24}$/);
 
   const projectFile = await fs.readFile(path.join(projectPath, "project.godot"), "utf-8");
   assert.ok(projectFile.includes('config/name="Quoted \\"Game\\""'));

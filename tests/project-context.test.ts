@@ -5,6 +5,7 @@ import test from "node:test";
 
 import type { OpenGodotProject } from "../src/godot/finder.js";
 import { resolveProjectPath } from "../src/tools/project-context.js";
+import { clearProjectRegistry, registerProject } from "../src/project-registry.js";
 import { createGodotProject, createTempDir, writeText } from "./helpers.js";
 
 function openProject(project_path: string, project_name: string): OpenGodotProject {
@@ -15,6 +16,14 @@ test("resolveProjectPath validates an explicit project path", async (t) => {
   const projectPath = await createGodotProject(t);
 
   assert.equal(await resolveProjectPath({ project_path: projectPath }, async () => []), await fs.realpath(projectPath));
+});
+
+test("resolveProjectPath accepts a registered stable project ID", async (t) => {
+  clearProjectRegistry();
+  const projectPath = await createGodotProject(t);
+  const project = await registerProject(projectPath);
+  assert.equal(await resolveProjectPath({ project_id: project.project_id }, async () => []), await fs.realpath(projectPath));
+  await assert.rejects(resolveProjectPath({ project_id: "missing" }, async () => []), /Unknown project_id/);
 });
 
 test("resolveProjectPath uses the only open project by default", async (t) => {
