@@ -118,7 +118,7 @@ npm run build
 
 Copy `addons/godot_mcp_bridge` into the target project's `addons` directory, then enable **Godot MCP Editor Bridge** under **Project Settings → Plugins**. The plugin binds only to `127.0.0.1`, generates a fresh 256-bit token for each editor session, and publishes a short-lived descriptor under `.godot/godot_mcp_bridge/instances`.
 
-The bridge is read-mostly. It exposes the active in-memory scene, current selection, open scenes, play state, and performance without permitting arbitrary method calls. Explicit play controls may trigger Godot's normal run-bar autosave behavior, so they are scheduled as project mutations and emit resource invalidation. All existing disk/headless tools continue working when the plugin is absent.
+The bridge is read-mostly. It exposes the active in-memory scene, current selection, open scenes, play state, and performance without permitting arbitrary method calls. Live scene reads include ownership, instantiated-scene provenance, persistent signals, and conservative dirty-state confidence. Godot versions with an unsaved-scenes API provide exact scene status; Godot 4.3 reports tracked dirty transitions but leaves potentially clean scenes `unknown` because direct unsaved markers are not public. Inactive tabs and unsaved script buffers are not inspected. Explicit play controls may trigger Godot's normal run-bar autosave behavior, so they are scheduled as project mutations and emit resource invalidation. All existing disk/headless tools continue working when the plugin is absent.
 
 ### VS Code / Copilot
 

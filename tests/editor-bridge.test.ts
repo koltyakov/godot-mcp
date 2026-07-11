@@ -7,7 +7,7 @@ import test from "node:test";
 import { discoverEditorBridges } from "../src/godot/bridge/discovery.js";
 import { callEditorBridge } from "../src/godot/bridge/client.js";
 import type { BridgeDescriptor } from "../src/godot/bridge/discovery.js";
-import { getEditorStateTool } from "../src/tools/editor-tools.js";
+import { getEditorStateTool, readEditorSceneTool } from "../src/tools/editor-tools.js";
 import { runWithExecutionContext } from "../src/execution-context.js";
 import { createGodotProject, writeText } from "./helpers.js";
 
@@ -102,4 +102,81 @@ test("callEditorBridge closes promptly on MCP cancellation", async (t) => {
   const pending = runWithExecutionContext({ signal: controller.signal }, () => callEditorBridge(descriptor, "bridge.ping", {}, 5000));
   controller.abort();
   await assert.rejects(pending, { name: "AbortError" });
+});
+
+test("read_editor_scene preserves rich live scene state", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const canonicalPath = await fs.realpath(projectPath);
+  let receivedParams: Record<string, unknown> | undefined;
+  const server = net.createServer((socket) => {
+    let buffer = "";
+    socket.setEncoding("utf-8");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      for (;;) {
+        const newline = buffer.indexOf("\n");
+        if (newline < 0) break;
+        const request = JSON.parse(buffer.slice(0, newline)) as { id: number; method: string; params: Record<string, unknown> };
+        buffer = buffer.slice(newline + 1);
+        if (request.method === "bridge.hello") {
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocol: 1 } })}\n`);
+          continue;
+        }
+        receivedParams = request.params;
+        socket.write(`${JSON.stringify({
+          jsonrpc: "2.0",
+          id: request.id,
+          result: {
+            scene_path: "res://main.tscn",
+            dirty: true,
+            dirty_confidence: "undo_redo_tracked",
+            change_version: 4,
+            saved_change_version: 3,
+            tree: {
+              path: ".",
+              owner_path: null,
+              children: [{
+                path: "Enemy",
+                owner_path: ".",
+                instance: "res://enemy.tscn",
+                editable_instance: true,
+                incoming_connections: [{ signal: "pressed", from: "Button", to: "Enemy", method: "activate", flags: 2, binds: ["hard"], unbinds: 1 }],
+              }],
+            },
+          },
+        })}\n`);
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address() as net.AddressInfo;
+  await writeText(path.join(projectPath, ".godot", "godot_mcp_bridge", "instances", "live.json"), JSON.stringify({
+    schema: "godot-mcp-editor-bridge",
+    protocol: 1,
+    instance_id: "live",
+    pid: 1,
+    project_path: canonicalPath,
+    project_name: "Test Project",
+    godot_version: "4.3",
+    host: "127.0.0.1",
+    port: address.port,
+    token: "a".repeat(64),
+    capabilities: ["editor.scene.read"],
+    heartbeat_at_ms: Date.now(),
+  }));
+
+  const result = await readEditorSceneTool.execute({
+    project_path: projectPath,
+    scene_path: "main.tscn",
+  }, null) as Record<string, any>;
+
+  assert.deepEqual(receivedParams, { scene_path: "res://main.tscn" });
+  assert.equal(result.live, true);
+  assert.equal(result.source, "editor_memory");
+  assert.equal(result.unsaved_changes_included, true);
+  assert.equal(result.dirty_confidence, "undo_redo_tracked");
+  assert.equal(result.tree.children[0].instance, "res://enemy.tscn");
+  assert.equal(result.tree.children[0].incoming_connections[0].flags, 2);
+  assert.deepEqual(result.tree.children[0].incoming_connections[0].binds, ["hard"]);
 });

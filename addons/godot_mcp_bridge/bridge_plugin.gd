@@ -14,6 +14,10 @@ var _instance_id := ""
 var _token := ""
 var _descriptor_path := ""
 var _heartbeat_elapsed := 0.0
+var _observed_versions: Dictionary = {}
+var _saved_versions: Dictionary = {}
+var _scene_history_ids: Dictionary = {}
+var _scene_disk_hashes: Dictionary = {}
 
 
 func _enter_tree() -> void:
@@ -26,8 +30,12 @@ func _enter_tree() -> void:
 	var descriptor_dir := "res://.godot/godot_mcp_bridge/instances"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(descriptor_dir))
 	_descriptor_path = descriptor_dir.path_join(_instance_id + ".json")
+	scene_changed.connect(_on_scene_changed)
+	scene_saved.connect(_on_scene_saved)
+	scene_closed.connect(_on_scene_closed)
 	_write_descriptor()
 	set_process(true)
+	call_deferred("_observe_active_scene")
 
 
 func _exit_tree() -> void:
@@ -123,10 +131,14 @@ func _handle_request(peer: StreamPeerTCP, line: String) -> void:
 			if not requested_path.is_empty() and requested_path != scene_root.scene_file_path:
 				_send_error(peer, request_id, -32004, "Requested scene is not the active edited scene")
 				return
+			var dirty_state := _scene_dirty_state(scene_root)
 			_send_result(peer, request_id, {
 				"scene_path": scene_root.scene_file_path if not scene_root.scene_file_path.is_empty() else null,
-				"dirty": null,
-				"dirty_confidence": "unknown",
+				"dirty": dirty_state["dirty"],
+				"dirty_confidence": dirty_state["dirty_confidence"],
+				"change_version": dirty_state["change_version"],
+				"saved_change_version": dirty_state["saved_change_version"],
+				"unsaved_changes_included": true,
 				"tree": _serialize_node(scene_root, scene_root, 0),
 			})
 		"editor.play":
@@ -163,6 +175,7 @@ func _handle_request(peer: StreamPeerTCP, line: String) -> void:
 
 func _editor_state() -> Dictionary:
 	var root := EditorInterface.get_edited_scene_root()
+	var dirty_state := {} if root == null else _scene_dirty_state(root)
 	var selected := []
 	var open_scenes := []
 	for scene_path in EditorInterface.get_open_scenes():
@@ -176,18 +189,135 @@ func _editor_state() -> Dictionary:
 					"name": node.name,
 					"type": node.get_class(),
 				})
+	var playing := EditorInterface.is_playing_scene()
+	var playing_scene := EditorInterface.get_playing_scene() if playing else ""
 	return {
 		"project": {"path": _project_path(), "name": ProjectSettings.get_setting("application/config/name", "Unknown")},
 		"scene": null if root == null else {
 			"path": root.scene_file_path if not root.scene_file_path.is_empty() else null,
 			"name": root.name,
 			"type": root.get_class(),
-			"dirty": null,
-			"dirty_confidence": "unknown",
+			"dirty": dirty_state["dirty"],
+			"dirty_confidence": dirty_state["dirty_confidence"],
+			"change_version": dirty_state["change_version"],
+			"saved_change_version": dirty_state["saved_change_version"],
 		},
 		"open_scenes": open_scenes,
 		"selection": {"nodes": selected},
-		"play": {"playing": EditorInterface.is_playing_scene()},
+		"play": {"playing": playing, "scene_path": playing_scene if not playing_scene.is_empty() else null},
+	}
+
+
+func _observe_active_scene() -> void:
+	var root := EditorInterface.get_edited_scene_root()
+	if root != null:
+		_observe_scene_history(root)
+
+
+func _on_scene_changed(scene_root: Node) -> void:
+	if scene_root != null:
+		_observe_scene_history(scene_root)
+
+
+func _on_scene_saved(filepath: String) -> void:
+	var previous_sha256 := String(_scene_disk_hashes.get(filepath, ""))
+	call_deferred("_confirm_scene_saved", filepath, previous_sha256)
+
+
+func _confirm_scene_saved(filepath: String, previous_sha256: String) -> void:
+	var root := EditorInterface.get_edited_scene_root()
+	if root != null and root.scene_file_path == filepath:
+		_observe_scene_history(root)
+	var history_id = _scene_history_ids.get(filepath)
+	if history_id == null:
+		return
+	var save_confirmed := false
+	if EditorInterface.has_method("get_unsaved_scenes"):
+		var unsaved_scenes = EditorInterface.call("get_unsaved_scenes")
+		if typeof(unsaved_scenes) == TYPE_ARRAY or typeof(unsaved_scenes) == TYPE_PACKED_STRING_ARRAY:
+			save_confirmed = not unsaved_scenes.has(filepath)
+	elif FileAccess.file_exists(filepath):
+		var current_sha256 := FileAccess.get_sha256(filepath)
+		save_confirmed = not current_sha256.is_empty() and current_sha256 != previous_sha256
+	if not save_confirmed:
+		return
+	_scene_disk_hashes[filepath] = FileAccess.get_sha256(filepath)
+	var history = get_undo_redo().get_history_undo_redo(int(history_id))
+	if history != null:
+		_saved_versions[int(history_id)] = history.get_version()
+
+
+func _on_scene_closed(filepath: String) -> void:
+	var history_id = _scene_history_ids.get(filepath)
+	_scene_history_ids.erase(filepath)
+	_scene_disk_hashes.erase(filepath)
+	if history_id != null:
+		_observed_versions.erase(int(history_id))
+		_saved_versions.erase(int(history_id))
+
+
+func _observe_scene_history(root: Node) -> Dictionary:
+	var history_id := int(get_undo_redo().get_object_history_id(root))
+	var history = get_undo_redo().get_history_undo_redo(history_id)
+	if history == null:
+		return {"history_id": history_id, "change_version": null}
+	var version := int(history.get_version())
+	if not _observed_versions.has(history_id):
+		_observed_versions[history_id] = version
+	if not root.scene_file_path.is_empty():
+		_scene_history_ids[root.scene_file_path] = history_id
+		if not _scene_disk_hashes.has(root.scene_file_path):
+			_scene_disk_hashes[root.scene_file_path] = FileAccess.get_sha256(root.scene_file_path) if FileAccess.file_exists(root.scene_file_path) else ""
+	return {"history_id": history_id, "change_version": version}
+
+
+func _scene_dirty_state(root: Node) -> Dictionary:
+	var history_state := _observe_scene_history(root)
+	var history_id := int(history_state.get("history_id", -1))
+	var version = history_state.get("change_version")
+	var saved_version = _saved_versions.get(history_id)
+	if root.scene_file_path.is_empty():
+		return {
+			"dirty": true,
+			"dirty_confidence": "exact_untitled",
+			"change_version": version,
+			"saved_change_version": saved_version,
+		}
+	if EditorInterface.has_method("get_unsaved_scenes"):
+		var unsaved_scenes = EditorInterface.call("get_unsaved_scenes")
+		if typeof(unsaved_scenes) == TYPE_ARRAY or typeof(unsaved_scenes) == TYPE_PACKED_STRING_ARRAY:
+			return {
+				"dirty": unsaved_scenes.has(root.scene_file_path),
+				"dirty_confidence": "editor_api",
+				"change_version": version,
+				"saved_change_version": saved_version,
+			}
+	if saved_version != null and version != null:
+		if version != saved_version:
+			return {
+				"dirty": true,
+				"dirty_confidence": "undo_redo_tracked",
+				"change_version": version,
+				"saved_change_version": saved_version,
+			}
+		return {
+			"dirty": null,
+			"dirty_confidence": "unknown",
+			"change_version": version,
+			"saved_change_version": saved_version,
+		}
+	if version != null and version != _observed_versions.get(history_id):
+		return {
+			"dirty": true,
+			"dirty_confidence": "undo_redo_tracked",
+			"change_version": version,
+			"saved_change_version": null,
+		}
+	return {
+		"dirty": null,
+		"dirty_confidence": "unknown",
+		"change_version": version,
+		"saved_change_version": null,
 	}
 
 
@@ -216,7 +346,14 @@ func _serialize_node(node: Node, root: Node, depth: int) -> Dictionary:
 		"groups": [],
 		"metadata": {},
 		"properties": {},
+		"owner_path": null,
 	}
+	if node.owner is Node and (node.owner == root or root.is_ancestor_of(node.owner)):
+		result["owner_path"] = "." if node.owner == root else String(root.get_path_to(node.owner))
+	var instance_path := node.get_scene_file_path()
+	if node != root and not instance_path.is_empty():
+		result["instance"] = instance_path
+		result["editable_instance"] = root.is_editable_instance(node)
 	for group in node.get_groups():
 		result["groups"].append(String(group))
 	for key in node.get_meta_list():
@@ -228,8 +365,13 @@ func _serialize_node(node: Node, root: Node, depth: int) -> Dictionary:
 		if property_name.is_empty() or property_name == "script" or (int(property_info.get("usage", 0)) & PROPERTY_USAGE_STORAGE) == 0:
 			continue
 		result["properties"][property_name] = _bridge_json_safe(node.get(property_name))
+	if node.is_unique_name_in_owner():
+		result["properties"]["unique_name_in_owner"] = true
 	if node.get_script() is Script:
 		result["script"] = (node.get_script() as Script).resource_path
+	var incoming_connections := _serialize_incoming_connections(node, root)
+	if not incoming_connections.is_empty():
+		result["incoming_connections"] = incoming_connections
 	if depth >= 64:
 		result["truncated"] = true
 		return result
@@ -237,6 +379,44 @@ func _serialize_node(node: Node, root: Node, depth: int) -> Dictionary:
 		if child is Node:
 			result["children"].append(_serialize_node(child, root, depth + 1))
 	return result
+
+
+func _serialize_incoming_connections(node: Node, root: Node) -> Array:
+	var result := []
+	for connection in node.get_incoming_connections():
+		if typeof(connection) != TYPE_DICTIONARY:
+			continue
+		var flags := int(connection.get("flags", 0))
+		if (flags & CONNECT_PERSIST) == 0:
+			continue
+		var entry := {"flags": flags}
+		var signal_value = connection.get("signal")
+		if typeof(signal_value) == TYPE_SIGNAL:
+			entry["signal"] = String(signal_value.get_name())
+			var source = signal_value.get_object()
+			if source is Node and (source == root or root.is_ancestor_of(source)):
+				entry["from"] = "." if source == root else String(root.get_path_to(source))
+		var callable = connection.get("callable", Callable())
+		if callable.is_valid():
+			var target = callable.get_object()
+			if target is Node and (target == root or root.is_ancestor_of(target)):
+				entry["to"] = "." if target == root else String(root.get_path_to(target))
+			entry["method"] = String(callable.get_method())
+			var bound_arguments: Array = callable.get_bound_arguments()
+			if not bound_arguments.is_empty():
+				entry["binds"] = _bridge_json_safe(bound_arguments)
+			var unbound_argument_count: int = _callable_unbind_count(callable)
+			if unbound_argument_count > 0:
+				entry["unbinds"] = unbound_argument_count
+		result.append(entry)
+	return result
+
+
+func _callable_unbind_count(callable_value) -> int:
+	var version := Engine.get_version_info()
+	if int(version.get("major", 4)) > 4 or int(version.get("minor", 0)) >= 4:
+		return int(callable_value.get_unbound_arguments_count())
+	return maxi(-int(callable_value.get_bound_arguments_count()), 0)
 
 
 func _write_descriptor() -> void:

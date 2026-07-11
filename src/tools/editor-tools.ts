@@ -13,7 +13,7 @@ const instanceProperty = {
 export const getEditorStateTool: ToolHandler = {
   definition: {
     name: "get_editor_state",
-    description: "Read live Godot editor state including the active scene, selection, open scenes, and play state when the optional editor bridge is enabled.",
+    description: "Read live editor state including the active scene, conservative dirty status, selection, open scenes, and play state when the optional bridge is enabled.",
     inputSchema: {
       type: "object",
       properties: { ...projectSelectorProperties, ...instanceProperty },
@@ -52,7 +52,7 @@ export const getEditorStateTool: ToolHandler = {
 export const readEditorSceneTool: ToolHandler = {
   definition: {
     name: "read_editor_scene",
-    description: "Read the active in-memory editor scene, including unsaved changes. Optionally falls back to the saved scene on disk.",
+    description: "Read the active in-memory editor scene with dirty confidence, ownership, instances, and persistent signal wiring. Optionally falls back to disk.",
     inputSchema: {
       type: "object",
       properties: {
@@ -76,6 +76,7 @@ export const readEditorSceneTool: ToolHandler = {
         return {
           live: true,
           source: "editor_memory",
+          unsaved_changes_included: true,
           ...(await callEditorBridge(descriptor, "editor.read_scene", scenePath ? { scene_path: scenePath } : {}) as Record<string, unknown>),
         };
       } catch (error) {
