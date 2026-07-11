@@ -16,6 +16,11 @@ import { setupPromptHandlers } from "./prompts/index.js";
 import { setServerLogger, setMinimumLogLevel, log } from "./logger.js";
 import { setResourceListChangedNotifier } from "./notifications.js";
 import { validateToolArguments } from "./schema-validation.js";
+import {
+  permissiveToolOutputSchema,
+  toolErrorResponse,
+  toolSuccessResponse,
+} from "./tool-response.js";
 
 // Initialize Godot executor
 let godotExecutor: GodotExecutor | null = null;
@@ -89,6 +94,7 @@ function setupHandlers(): void {
         name: tool.name,
         description: tool.description,
         inputSchema: tool.inputSchema,
+        outputSchema: permissiveToolOutputSchema,
         ...(tool.annotations ? { annotations: tool.annotations } : {}),
       })),
     };
@@ -99,7 +105,7 @@ function setupHandlers(): void {
   setupPromptHandlers(server);
 
   // Handle call tool request
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     const toolArgs = args ?? {};
 
@@ -107,38 +113,18 @@ function setupHandlers(): void {
     const tool = toolMap.get(name);
     const validationErrors = validateToolArguments(tool, toolArgs);
     if (validationErrors.length > 0) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: Invalid parameter(s): ${validationErrors.join("; ")}`,
-          },
-        ],
-        isError: true,
-      };
+      return toolErrorResponse(`Invalid parameter(s): ${validationErrors.join("; ")}`);
     }
 
     try {
-      const result = await executeTool(name, toolArgs, godotExecutor);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: typeof result === "string" ? result : JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      const result = await executeTool(name, toolArgs, godotExecutor, {
+        signal: extra.signal,
+        requestId: extra.requestId,
+      });
+      return toolSuccessResponse(result);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: ${errorMessage}`,
-          },
-        ],
-        isError: true,
-      };
+      return toolErrorResponse(errorMessage);
     }
   });
 }
@@ -155,6 +141,24 @@ async function main(): Promise<void> {
     message: "godot-mcp server started",
     godot_available: godotExecutor !== null,
     godot_path: godotExecutor?.getGodotPath(),
+  });
+}
+
+let cleanupPromise: Promise<void> | null = null;
+function cleanup(): Promise<void> {
+  cleanupPromise ??= godotExecutor?.dispose() ?? Promise.resolve();
+  return cleanupPromise;
+}
+
+server.onclose = () => {
+  void cleanup();
+};
+process.stdin.once("end", () => {
+  void cleanup();
+});
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    void cleanup().finally(() => process.exit(0));
   });
 }
 

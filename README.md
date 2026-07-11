@@ -46,8 +46,10 @@ The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are 
 - **launch_editor** - Launch Godot editor
 - **run_project** - Run the project
 - **run_project_diagnostics** - Run a project or selected scene headlessly for a bounded number of frames and return structured parser/runtime diagnostics, exit status, timing, and captured output
+- **get_editor_state** / **read_editor_scene** - Read live editor selection, play state, open scenes, and the active in-memory scene through the optional authenticated editor bridge
 - **get_godot_version** - Get Godot version info
 - **create_resource** - Create resource files (.tres)
+- **list_resources** / **read_resource** / **update_resource** / **delete_resource** - Inspect and manage `.tres` and `.res` resources; deletion is dependency-protected by default
 - **run_godot_script** - Run custom GDScript inside a project and return JSON-safe results
 
 ### Project Configuration & Introspection
@@ -108,6 +110,12 @@ npm run build
 ```
 
 ## Configuration
+
+### Optional live editor bridge
+
+Copy `addons/godot_mcp_bridge` into the target project's `addons` directory, then enable **Godot MCP Editor Bridge** under **Project Settings → Plugins**. The plugin binds only to `127.0.0.1`, generates a fresh 256-bit token for each editor session, and publishes a short-lived descriptor under `.godot/godot_mcp_bridge/instances`.
+
+The bridge is read-only. It exposes the active in-memory scene, current selection, open scenes, and play state without permitting arbitrary method calls or project writes. All existing disk/headless tools continue working when the plugin is absent.
 
 ### VS Code / Copilot
 
@@ -179,6 +187,9 @@ npm start
 ## Environment Variables
 
 - `GODOT_PATH` - Path to Godot executable (optional if Godot is in PATH)
+- `GODOT_MCP_MAX_PROCESSES` - Maximum concurrent managed Godot processes (default `4`)
+
+Tool calls support MCP cancellation. Queued work is removed immediately, running Godot process groups are terminated, and all managed children are cleaned up when the server or transport closes. Large operation payloads are passed through owner-only temporary request files instead of command-line arguments.
 
 ## Supported Node Types
 

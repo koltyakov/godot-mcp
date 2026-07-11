@@ -18,7 +18,26 @@ func _init():
 	var params = {}
 	var result_token = ""
 	
-	if args.size() > 1:
+	if args.size() > 2 and args[1] == "--request-file":
+		var request_file = FileAccess.open(args[2], FileAccess.READ)
+		if request_file == null:
+			_output_error("Failed to open request file")
+			quit(1)
+			return
+		var request_json = request_file.get_as_text()
+		request_file.close()
+		var json = JSON.new()
+		var parse_result = json.parse(request_json)
+		if parse_result == OK and typeof(json.data) == TYPE_DICTIONARY:
+			params = json.data
+			if params.has("__mcp_result_token"):
+				result_token = String(params["__mcp_result_token"])
+				params.erase("__mcp_result_token")
+		else:
+			_output_error("Failed to parse request file: " + json.get_error_message())
+			quit(1)
+			return
+	elif args.size() > 1:
 		var json = JSON.new()
 		var parse_result = json.parse(args[1])
 		if parse_result == OK:
@@ -69,6 +88,10 @@ func _execute_operation(operation: String, params: Dictionary) -> Dictionary:
 			return _add_animation_track(params)
 		"create_resource":
 			return _create_resource(params)
+		"read_resource":
+			return _read_resource(params)
+		"update_resource":
+			return _update_resource(params)
 		"get_project_info":
 			return _get_project_info(params)
 		"list_scenes":
@@ -412,6 +435,10 @@ func _apply_scene_change(scene_root: Node, change: Dictionary) -> Dictionary:
 			return _apply_modify_node_change(scene_root, change)
 		"remove_node":
 			return _apply_remove_node_change(scene_root, change)
+		"rename_node":
+			return _apply_rename_node_change(scene_root, change)
+		"reparent_node":
+			return _apply_reparent_node_change(scene_root, change)
 		_:
 			return {"success": false, "error": "Unsupported operation: " + operation}
 
@@ -499,6 +526,66 @@ func _apply_remove_node_change(scene_root: Node, change: Dictionary) -> Dictiona
 	node.get_parent().remove_child(node)
 	node.free()
 	return {"success": true, "operation": "remove_node", "node_path": canonical_path}
+
+
+func _apply_rename_node_change(scene_root: Node, change: Dictionary) -> Dictionary:
+	var node_path = String(change.get("node_path", ""))
+	var new_name = String(change.get("new_name", ""))
+	if node_path.is_empty() or node_path == ".":
+		return {"success": false, "error": "A non-root node_path is required"}
+	if new_name.is_empty() or new_name in [".", ".."] or new_name.contains("/") or new_name.contains(":"):
+		return {"success": false, "error": "Invalid new_name: " + new_name}
+	if _scene_has_path_sensitive_data(scene_root):
+		return {"success": false, "error": "rename_node is unsafe while the scene contains NodePath properties or AnimationPlayer nodes; use the live editor so Godot can remap references"}
+	var node = scene_root.get_node_or_null(node_path)
+	if node == null:
+		return {"success": false, "error": "Node not found: " + node_path}
+	var parent = node.get_parent()
+	if parent.has_node(NodePath(new_name)) and parent.get_node(NodePath(new_name)) != node:
+		return {"success": false, "error": "A sibling named '" + new_name + "' already exists"}
+	var old_path = String(scene_root.get_path_to(node))
+	node.name = new_name
+	return {"success": true, "operation": "rename_node", "old_node_path": old_path, "node_path": String(scene_root.get_path_to(node))}
+
+
+func _apply_reparent_node_change(scene_root: Node, change: Dictionary) -> Dictionary:
+	var node_path = String(change.get("node_path", ""))
+	var new_parent_path = String(change.get("new_parent_path", ""))
+	if node_path.is_empty() or node_path == ".":
+		return {"success": false, "error": "A non-root node_path is required"}
+	if new_parent_path.is_empty():
+		return {"success": false, "error": "new_parent_path is required"}
+	if _scene_has_path_sensitive_data(scene_root):
+		return {"success": false, "error": "reparent_node is unsafe while the scene contains NodePath properties or AnimationPlayer nodes; use the live editor so Godot can remap references"}
+	var node = scene_root.get_node_or_null(node_path)
+	var new_parent = scene_root if new_parent_path == "." else scene_root.get_node_or_null(new_parent_path)
+	if node == null:
+		return {"success": false, "error": "Node not found: " + node_path}
+	if new_parent == null:
+		return {"success": false, "error": "New parent not found: " + new_parent_path}
+	if node == new_parent or node.is_ancestor_of(new_parent):
+		return {"success": false, "error": "Cannot reparent a node beneath itself or its descendant"}
+	if new_parent.has_node(NodePath(String(node.name))):
+		return {"success": false, "error": "New parent already has a child named '" + String(node.name) + "'"}
+	var old_path = String(scene_root.get_path_to(node))
+	node.reparent(new_parent)
+	node.owner = scene_root
+	return {"success": true, "operation": "reparent_node", "old_node_path": old_path, "node_path": String(scene_root.get_path_to(node))}
+
+
+func _scene_has_path_sensitive_data(node: Node) -> bool:
+	if node is AnimationPlayer:
+		return true
+	for property_info in node.get_property_list():
+		if typeof(property_info) != TYPE_DICTIONARY or int(property_info.get("type", TYPE_NIL)) != TYPE_NODE_PATH:
+			continue
+		var value = node.get(String(property_info.get("name", "")))
+		if value is NodePath and not value.is_empty():
+			return true
+	for child in node.get_children():
+		if child is Node and _scene_has_path_sensitive_data(child):
+			return true
+	return false
 
 
 func _read_scene(params: Dictionary) -> Dictionary:
@@ -1006,6 +1093,56 @@ func _create_resource(params: Dictionary) -> Dictionary:
 	return {
 		"success": true,
 		"message": "Created " + resource_type + " at " + resource_path
+	}
+
+
+func _read_resource(params: Dictionary) -> Dictionary:
+	var resource_path = String(params.get("resource_path", ""))
+	if resource_path.is_empty():
+		return {"success": false, "error": "resource_path is required"}
+	var resource = load(resource_path)
+	if resource == null or not resource is Resource:
+		return {"success": false, "error": "Failed to load resource: " + resource_path}
+	var properties := {}
+	for property_info in resource.get_property_list():
+		if typeof(property_info) != TYPE_DICTIONARY:
+			continue
+		var property_name := String(property_info.get("name", ""))
+		var usage := int(property_info.get("usage", 0))
+		if property_name.is_empty() or property_name == "resource_path" or (usage & PROPERTY_USAGE_STORAGE) == 0:
+			continue
+		properties[property_name] = _to_json_safe(resource.get(property_name))
+	return {
+		"success": true,
+		"resource_path": resource_path,
+		"resource_type": resource.get_class(),
+		"properties": properties,
+	}
+
+
+func _update_resource(params: Dictionary) -> Dictionary:
+	var resource_path = String(params.get("resource_path", ""))
+	var properties = params.get("properties", {})
+	if resource_path.is_empty():
+		return {"success": false, "error": "resource_path is required"}
+	if typeof(properties) != TYPE_DICTIONARY or properties.is_empty():
+		return {"success": false, "error": "properties must be a non-empty object"}
+	var resource = load(resource_path)
+	if resource == null or not resource is Resource:
+		return {"success": false, "error": "Failed to load resource: " + resource_path}
+	for property_name in properties:
+		if not _has_property(resource, property_name):
+			return {"success": false, "error": "Property not found on resource: " + String(property_name)}
+		resource.set(property_name, _convert_property_value(properties[property_name]))
+	var save_result = ResourceSaver.save(resource, resource_path)
+	if save_result != OK:
+		return {"success": false, "error": "Failed to save resource: " + str(save_result)}
+	return {
+		"success": true,
+		"message": "Updated resource at " + resource_path,
+		"resource_path": resource_path,
+		"resource_type": resource.get_class(),
+		"modified_properties": properties.keys(),
 	}
 
 

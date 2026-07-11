@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  node:
+    strategy:
+      matrix:
+        node: [18, 20, 22]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm pack --dry-run --ignore-scripts
+
+  godot-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.3.0
+          use-dotnet: false
+      - name: Validate bundled operations script
+        shell: bash
+        run: |
+          project="$(mktemp -d)"
+          printf 'config_version=5\n\n[editor_plugins]\nenabled=PackedStringArray("res://addons/godot_mcp_bridge/plugin.cfg")\n' > "$project/project.godot"
+          request="$(mktemp)"
+          printf '%s' '{"scene_path":"res://main.tscn","root_type":"Node2D","root_name":"Main","__mcp_result_token":"ci"}' > "$request"
+          godot --headless --path "$project" --script "$PWD/scripts/godot_operations.gd" -- \
+            create_scene --request-file "$request"
+          test -f "$project/main.tscn"
+          mkdir -p "$project/addons"
+          cp -R "$PWD/addons/godot_mcp_bridge" "$project/addons/"
+          godot --headless --editor --path "$project" --quit-after 5

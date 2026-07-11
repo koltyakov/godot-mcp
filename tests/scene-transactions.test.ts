@@ -100,7 +100,7 @@ test("GodotExecutor serializes mutations targeting the same scene", async (t) =>
   await writeText(fakeGodotPath, `#!/usr/bin/env node
 import fs from "node:fs";
 const markerArgs = process.argv.slice(process.argv.indexOf('--') + 1);
-const params = JSON.parse(markerArgs[1]);
+const params = JSON.parse(fs.readFileSync(markerArgs[2], 'utf8'));
 fs.appendFileSync(params.event_path, 'start:' + params.id + '\\n');
 setTimeout(() => {
   fs.appendFileSync(params.event_path, 'end:' + params.id + '\\n');
@@ -132,7 +132,7 @@ test("GodotExecutor allows mutations to different scenes concurrently", async (t
   await writeText(fakeGodotPath, `#!/usr/bin/env node
 import fs from "node:fs";
 const markerArgs = process.argv.slice(process.argv.indexOf('--') + 1);
-const params = JSON.parse(markerArgs[1]);
+const params = JSON.parse(fs.readFileSync(markerArgs[2], 'utf8'));
 fs.appendFileSync(params.event_path, 'start:' + params.id + '\\n');
 setTimeout(() => {
   fs.appendFileSync(params.event_path, 'end:' + params.id + '\\n');

@@ -48,6 +48,8 @@ test("destructive tools are annotated destructiveHint=true", () => {
     "edit_script",
     "attach_script",
     "create_resource",
+    "update_resource",
+    "delete_resource",
     "create_animation",
     "add_animation_track",
     "init_project",

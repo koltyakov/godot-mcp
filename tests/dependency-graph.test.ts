@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as path from "node:path";
 import test from "node:test";
 
 import { buildDependencyReport, findUsages } from "../src/dependency-graph.js";
@@ -148,4 +149,28 @@ test("buildDependencyReport handles a project with no assets", async (t) => {
   const report = await buildDependencyReport({ project_path: projectPath });
   assert.deepEqual(report.counts, { scenes: 0, scripts: 0, resources: 0, shaders: 0, other: 0 });
   assert.deepEqual(report.orphans, []);
+});
+
+test("dependency graph resolves source-relative paths and project entrypoints", async (t) => {
+  const projectPath = await createGodotProject(t, `config_version=5
+
+[application]
+run/main_scene="res://scenes/main.tscn"
+`);
+  await writeText(path.join(projectPath, "scenes", "main.tscn"), '[ext_resource type="Script" path="../scripts/player.gd" id="1"]\n');
+  await writeText(path.join(projectPath, "scripts", "player.gd"), 'extends Node\nconst Missing = preload("res://missing.tres")\n');
+
+  const report = await buildDependencyReport({ project_path: projectPath });
+  assert.deepEqual(report.nodes["res://scenes/main.tscn"].dependsOn, ["res://scripts/player.gd"]);
+  assert.ok(report.nodes["res://scenes/main.tscn"].referencedBy.includes("res://project.godot"));
+  assert.deepEqual(findUsages(report, "res://missing.tres").referencedBy, ["res://scripts/player.gd"]);
+});
+
+test("dependency graph extracts shader includes", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "shaders", "main.gdshader"), '#include "common.gdshaderinc"\n');
+  await writeText(path.join(projectPath, "shaders", "common.gdshaderinc"), "// common\n");
+
+  const report = await buildDependencyReport({ project_path: projectPath });
+  assert.deepEqual(report.nodes["res://shaders/main.gdshader"].dependsOn, ["res://shaders/common.gdshaderinc"]);
 });

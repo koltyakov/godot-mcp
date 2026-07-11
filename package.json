@@ -10,6 +10,7 @@
   "files": [
     "dist/",
     "scripts/godot_operations.gd",
+    "addons/godot_mcp_bridge/",
     "README.md",
     "LICENSE"
   ],

@@ -70,7 +70,21 @@ function normalizeSceneChanges(value: unknown): Record<string, unknown>[] {
       return { operation, node_path: change.node_path };
     }
 
-    throw new Error(`changes[${index}].operation must be add_node, modify_node, or remove_node`);
+    if (operation === "rename_node") {
+      if (typeof change.node_path !== "string" || !change.node_path || typeof change.new_name !== "string" || !change.new_name) {
+        throw new Error(`changes[${index}] requires node_path and new_name for rename_node`);
+      }
+      return { operation, node_path: change.node_path, new_name: change.new_name };
+    }
+
+    if (operation === "reparent_node") {
+      if (typeof change.node_path !== "string" || !change.node_path || typeof change.new_parent_path !== "string" || !change.new_parent_path) {
+        throw new Error(`changes[${index}] requires node_path and new_parent_path for reparent_node`);
+      }
+      return { operation, node_path: change.node_path, new_parent_path: change.new_parent_path };
+    }
+
+    throw new Error(`changes[${index}].operation must be add_node, modify_node, remove_node, rename_node, or reparent_node`);
   });
 }
 
@@ -225,15 +239,17 @@ export const applySceneChangesTool: ToolHandler = {
         changes: {
           type: "array",
           description:
-            "Ordered changes. add_node requires node_name and exactly one of node_type or instance_scene_path; modify_node requires node_path and properties; remove_node requires node_path.",
+            "Ordered changes. Supports add_node, modify_node, remove_node, rename_node, and reparent_node.",
           items: {
             type: "object",
             properties: {
-              operation: { type: "string", enum: ["add_node", "modify_node", "remove_node"] },
+              operation: { type: "string", enum: ["add_node", "modify_node", "remove_node", "rename_node", "reparent_node"] },
               parent_path: { type: "string" },
               node_path: { type: "string" },
               node_type: { type: "string" },
               node_name: { type: "string" },
+              new_name: { type: "string" },
+              new_parent_path: { type: "string" },
               instance_scene_path: { type: "string" },
               properties: { type: "object", additionalProperties: true },
             },

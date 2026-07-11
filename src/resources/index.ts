@@ -17,6 +17,7 @@ import {
   SCRIPT_EXTENSIONS,
 } from "../tools/path-utils.js";
 import { log } from "../logger.js";
+import { runWithExecutionContext } from "../execution-context.js";
 
 /**
  * Custom URI scheme used for Godot resources. Resolvable targets:
@@ -207,7 +208,10 @@ export function setupResourceHandlers(
     return { resources };
   });
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler(ReadResourceRequestSchema, async (request, extra) => runWithExecutionContext({
+    signal: extra.signal,
+    requestId: extra.requestId,
+  }, async () => {
     const uri = request.params.uri;
     const parsed = parseGodotUri(uri);
     if (!parsed) {
@@ -266,5 +270,5 @@ export function setupResourceHandlers(
         }
       }
     }
-  });
+  }));
 }

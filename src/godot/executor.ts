@@ -1,10 +1,13 @@
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import * as fs from "fs/promises";
+import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
 import { log } from "../logger.js";
+import { getExecutionSignal } from "../execution-context.js";
+import { FifoSemaphore } from "./concurrency.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,6 +56,7 @@ interface BufferedProcessResult {
   truncated: boolean;
   error?: string;
   timedOutAfterMs?: number;
+  aborted?: boolean;
 }
 
 function escapeRegExp(value: string): string {
@@ -91,7 +95,7 @@ function isResultPayload(value: unknown): value is OperationResultPayload {
     (result.error === undefined || typeof result.error === "string");
 }
 
-async function canonicalizeProspectivePath(filePath: string): Promise<string> {
+export async function canonicalizeProspectivePath(filePath: string): Promise<string> {
   let existingAncestor = filePath;
   while (true) {
     try {
@@ -115,11 +119,18 @@ export class GodotExecutor {
   private operationsScriptPath: string;
   private sceneMutationTails = new Map<string, Promise<void>>();
   private sceneKeyResolutionTail: Promise<void> = Promise.resolve();
+  private readonly processLimiter: FifoSemaphore;
+  private readonly activeChildren = new Set<ReturnType<typeof spawn>>();
+  private disposed = false;
 
-  constructor(godotPath: string) {
+  constructor(godotPath: string, options: { maxConcurrentProcesses?: number } = {}) {
     this.godotPath = godotPath;
     // Path to our bundled GDScript operations handler
     this.operationsScriptPath = path.join(__dirname, "..", "..", "scripts", "godot_operations.gd");
+    const configuredLimit = Number(process.env.GODOT_MCP_MAX_PROCESSES);
+    const maxConcurrentProcesses = options.maxConcurrentProcesses ??
+      (Number.isInteger(configuredLimit) && configuredLimit > 0 ? configuredLimit : 4);
+    this.processLimiter = new FifoSemaphore(maxConcurrentProcesses);
   }
 
   /**
@@ -145,12 +156,8 @@ export class GodotExecutor {
         const relativeScenePath = scenePath.startsWith("res://") ? scenePath.slice(6) : scenePath;
         const lexicalScenePath = path.resolve(projectPath, relativeScenePath);
         const canonicalScenePath = await canonicalizeProspectivePath(lexicalScenePath);
-        const fileStats = await fs.stat(canonicalScenePath).catch(() => null);
-        const lockKey = fileStats
-          ? `${fileStats.dev}:${fileStats.ino}`
-          : canonicalScenePath;
         pendingOperation = this.withSceneMutationLock(
-          lockKey,
+          canonicalScenePath,
           () => this.executeOperation(projectPath, operation, params, timeoutMs)
         );
       } finally {
@@ -169,11 +176,18 @@ export class GodotExecutor {
     timeoutMs?: number
   ): Promise<ExecutionResult> {
     const resultToken = randomUUID();
+    const requestDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "godot-mcp-request-"));
+    const requestPath = path.join(requestDirectory, "request.json");
+    await fs.writeFile(
+      requestPath,
+      JSON.stringify({ ...params, __mcp_result_token: resultToken }),
+      { encoding: "utf-8", mode: 0o600, flag: "wx" }
+    );
     const args = [
       "--headless",
       "--path", projectPath,
       "-s", this.operationsScriptPath,
-      "--", operation, JSON.stringify({ ...params, __mcp_result_token: resultToken }),
+      "--", operation, "--request-file", requestPath,
     ];
 
     const startedAt = Date.now();
@@ -183,7 +197,12 @@ export class GodotExecutor {
       project_path: projectPath,
     });
 
-    const processResult = await this.runBuffered(args, projectPath, timeoutMs);
+    let processResult: BufferedProcessResult;
+    try {
+      processResult = await this.runBuffered(args, projectPath, timeoutMs);
+    } finally {
+      await fs.rm(requestDirectory, { recursive: true, force: true }).catch(() => undefined);
+    }
     const durationMs = Date.now() - startedAt;
 
     if (processResult.error) {
@@ -397,7 +416,35 @@ export class GodotExecutor {
     return this.godotPath;
   }
 
+  async dispose(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.processLimiter.close();
+    for (const child of this.activeChildren) {
+      this.killProcess(child, "SIGTERM");
+    }
+    const deadline = Date.now() + 2_000;
+    while (this.activeChildren.size > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    for (const child of this.activeChildren) {
+      this.killProcess(child, "SIGKILL");
+    }
+  }
+
   private runBuffered(args: string[], cwd?: string, timeoutMs?: number): Promise<BufferedProcessResult> {
+    const signal = getExecutionSignal();
+    return this.processLimiter.run(signal, () => this.runBufferedProcess(args, cwd, timeoutMs, signal));
+  }
+
+  private runBufferedProcess(
+    args: string[],
+    cwd: string | undefined,
+    timeoutMs: number | undefined,
+    signal: AbortSignal | undefined
+  ): Promise<BufferedProcessResult> {
     const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
     return new Promise((resolve) => {
       let stdout = "";
@@ -408,6 +455,8 @@ export class GodotExecutor {
       let timeout: NodeJS.Timeout | undefined;
       let forceKillTimeout: NodeJS.Timeout | undefined;
       let forceFinishTimeout: NodeJS.Timeout | undefined;
+      let aborted = false;
+      let abortListener: (() => void) | undefined;
 
       const appendOutput = (current: string, data: Buffer): string => {
         const combined = current + data.toString();
@@ -434,6 +483,12 @@ export class GodotExecutor {
         if (forceFinishTimeout) {
           clearTimeout(forceFinishTimeout);
         }
+        if (signal && abortListener) {
+          signal.removeEventListener("abort", abortListener);
+        }
+        if (proc) {
+          this.activeChildren.delete(proc);
+        }
         resolve(result);
       };
 
@@ -445,6 +500,7 @@ export class GodotExecutor {
           env: { ...process.env },
           stdio: ["ignore", "pipe", "pipe"],
         });
+        this.activeChildren.add(proc);
       } catch (error) {
         finish({
           code: null,
@@ -455,6 +511,26 @@ export class GodotExecutor {
           error: error instanceof Error ? error.message : String(error),
         });
         return;
+      }
+
+      abortListener = () => {
+        if (settled) {
+          return;
+        }
+        aborted = true;
+        this.killProcess(proc, "SIGTERM");
+        forceKillTimeout = setTimeout(() => {
+          if (!settled) {
+            this.killProcess(proc, "SIGKILL");
+          }
+        }, 1_000).unref();
+        forceFinishTimeout = setTimeout(() => {
+          finish({ code: null, stdout, stderr, timedOut: false, truncated, aborted: true, error: "Operation cancelled" });
+        }, 2_000).unref();
+      };
+      signal?.addEventListener("abort", abortListener, { once: true });
+      if (signal?.aborted) {
+        abortListener();
       }
 
       timeout = setTimeout(() => {
@@ -488,7 +564,16 @@ export class GodotExecutor {
       });
 
       proc.on("close", (code) => {
-        finish({ code, stdout, stderr, timedOut, truncated, timedOutAfterMs: timedOut ? effectiveTimeout : undefined });
+        finish({
+          code,
+          stdout,
+          stderr,
+          timedOut,
+          truncated,
+          timedOutAfterMs: timedOut ? effectiveTimeout : undefined,
+          aborted,
+          error: aborted ? "Operation cancelled" : undefined,
+        });
       });
 
       proc.on("error", (error) => {
@@ -498,6 +583,13 @@ export class GodotExecutor {
   }
 
   private killProcess(proc: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+    if (process.platform === "win32" && proc.pid) {
+      const args = ["/PID", String(proc.pid), "/T"];
+      if (signal === "SIGKILL") args.push("/F");
+      const killer = spawn("taskkill", args, { stdio: "ignore", windowsHide: true });
+      killer.unref();
+      return;
+    }
     if (process.platform !== "win32" && proc.pid) {
       try {
         process.kill(-proc.pid, signal);

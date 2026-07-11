@@ -7,7 +7,7 @@ import { validateGodotProjectPath } from "./tools/path-utils.js";
 const SCENE_EXT = new Set([".tscn", ".scn"]);
 const SCRIPT_EXT = new Set([".gd"]);
 const RESOURCE_EXT = new Set([".tres", ".res"]);
-const SHADER_EXT = new Set([".gdshader"]);
+const SHADER_EXT = new Set([".gdshader", ".gdshaderinc"]);
 
 const ALL_TRACKED = new Set<string>([...SCENE_EXT, ...SCRIPT_EXT, ...RESOURCE_EXT, ...SHADER_EXT]);
 
@@ -22,6 +22,8 @@ const EXT_RESOURCE_RE = /\[ext_resource[^\]]*path="([^"]+)"/g;
 const LOAD_RE = /\b(?:load|preload)\s*\(\s*"([^"]+)"/g;
 // class_name X  ->  reference by global class name
 const CLASS_NAME_RE = /^\s*class_name\s+([A-Za-z_][A-Za-z0-9_]*)/m;
+const SHADER_INCLUDE_RE = /^\s*#include\s+"([^"]+)"/gm;
+const PROJECT_RESOURCE_RE = /\*?(res:\/\/[^"\s]+)/g;
 
 export interface AssetNode {
   /** res:// path */
@@ -111,6 +113,9 @@ async function readDependencies(
       refs.add(m[1]);
     }
   }
+  if (kind === "shader") {
+    for (const m of text.matchAll(SHADER_INCLUDE_RE)) refs.add(m[1]);
+  }
   if (kind === "script") {
     for (const m of text.matchAll(LOAD_RE)) {
       refs.add(m[1]);
@@ -123,12 +128,12 @@ async function readDependencies(
   return { refs: [...refs] };
 }
 
-function localize(projectPath: string, refPath: string): string | null {
-  // Keep only res:// paths; resolve others relative to project root.
+function localize(projectPath: string, sourcePath: string, refPath: string): string | null {
   if (refPath.startsWith("res://")) return refPath.replace(/\\/g, "/");
   if (refPath.startsWith("uid://")) return null; // UID refs need ClassDB to resolve
   if (path.isAbsolute(refPath)) return null;
-  return resPath(projectPath, path.join(projectPath, refPath));
+  const sourceFsPath = path.join(projectPath, sourcePath.slice("res://".length));
+  return resPath(projectPath, path.resolve(path.dirname(sourceFsPath), refPath));
 }
 
 export async function buildDependencyReport(
@@ -147,7 +152,7 @@ export async function buildDependencyReport(
     const { refs, className } = await readDependencies(fsPath, node.kind);
     if (className) node.className = className;
     for (const ref of refs) {
-      const localized = localize(realProjectPath, ref);
+      const localized = localize(realProjectPath, node.path, ref);
       if (!localized) continue;
       // Drop self-references.
       if (localized === node.path) continue;
@@ -161,6 +166,17 @@ export async function buildDependencyReport(
       const target = nodeMap.get(dep);
       if (target) target.referencedBy.push(node.path);
     }
+  }
+
+  const projectFile = await fs.readFile(path.join(realProjectPath, "project.godot"), "utf-8").catch(() => "");
+  for (const match of projectFile.matchAll(PROJECT_RESOURCE_RE)) {
+    const target = nodeMap.get(match[1]);
+    if (target) target.referencedBy.push("res://project.godot");
+  }
+
+  for (const node of nodes) {
+    node.dependsOn = [...new Set(node.dependsOn)].sort();
+    node.referencedBy = [...new Set(node.referencedBy)].sort();
   }
 
   // Orphans = no inbound references (excluding scene files referenced as
@@ -197,9 +213,12 @@ export function findUsages(report: DependencyReport, targetPath: string): {
     ? targetPath
     : `res://${targetPath.replace(/^\/+/, "")}`;
   const node = report.nodes[normalized];
+  const referencedBy = node
+    ? node.referencedBy
+    : Object.values(report.nodes).filter((candidate) => candidate.dependsOn.includes(normalized)).map((candidate) => candidate.path).sort();
   return {
     target: normalized,
     exists: Boolean(node),
-    referencedBy: node ? node.referencedBy : [],
+    referencedBy,
   };
 }

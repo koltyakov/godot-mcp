@@ -14,6 +14,11 @@ test("getAllTools returns unique tool definitions", () => {
   assert.ok(names.includes("run_project_diagnostics"));
   assert.ok(names.includes("create_scene"));
   assert.ok(names.includes("apply_scene_changes"));
+  assert.ok(names.includes("get_editor_state"));
+  assert.ok(names.includes("read_editor_scene"));
+  assert.ok(names.includes("read_resource"));
+  assert.ok(names.includes("update_resource"));
+  assert.ok(names.includes("delete_resource"));
   assert.equal(new Set(names).size, names.length);
 });
 
