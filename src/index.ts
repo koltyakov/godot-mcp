@@ -49,6 +49,7 @@ const server = new Server(
       "",
       "Writing to a project:",
       "- Always pass res:// paths (or paths relative to the project root) to create_*/edit_* tools. Absolute paths are rejected.",
+      "- Prefer apply_scene_changes for multi-step scene edits; it loads and saves once and rolls back the whole batch when a change fails.",
       "- Mutation tools are annotated destructiveHint=true and emit resources/list_changed on success.",
       "- After authoring changes, use run_project_diagnostics for a bounded run that returns actionable parser and runtime errors.",
       "",

@@ -377,72 +377,81 @@ export async function findOpenGodotProjects(): Promise<OpenGodotProject[]> {
   return resolveOpenGodotProjectsFromProcesses(await findRunningGodotProcesses());
 }
 
+type ProjectFileCatalog = { scenes: string[]; scripts: string[] };
+type CatalogCacheEntry = { expiresAt: number; value?: ProjectFileCatalog; pending?: Promise<ProjectFileCatalog> };
+const PROJECT_FILE_CACHE_TTL_MS = 1_000;
+const projectFileCatalogCache = new Map<string, CatalogCacheEntry>();
+let projectFileCatalogGeneration = 0;
+
+async function scanProjectFiles(projectPath: string): Promise<ProjectFileCatalog> {
+  const catalog: ProjectFileCatalog = { scenes: [], scripts: [] };
+
+  async function scanDir(dir: string): Promise<void> {
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    await Promise.all(entries.map(async (entry) => {
+      if (entry.name.startsWith(".") || entry.name === "addons") {
+        return;
+      }
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await scanDir(fullPath);
+        return;
+      }
+      const resourcePath = `res://${path.relative(projectPath, fullPath).replace(/\\/g, "/")}`;
+      if (entry.name.endsWith(".tscn") || entry.name.endsWith(".scn")) {
+        catalog.scenes.push(resourcePath);
+      } else if (entry.name.endsWith(".gd")) {
+        catalog.scripts.push(resourcePath);
+      }
+    }));
+  }
+
+  await scanDir(projectPath);
+  catalog.scenes.sort();
+  catalog.scripts.sort();
+  return catalog;
+}
+
+async function getProjectFileCatalog(projectPath: string): Promise<ProjectFileCatalog> {
+  const key = path.resolve(projectPath);
+  const cached = projectFileCatalogCache.get(key);
+  if (cached?.value && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+  if (cached?.pending) {
+    return cached.pending;
+  }
+
+  const pending = scanProjectFiles(key);
+  const generation = projectFileCatalogGeneration;
+  projectFileCatalogCache.set(key, { expiresAt: 0, pending });
+  try {
+    const value = await pending;
+    if (projectFileCatalogGeneration === generation && projectFileCatalogCache.get(key)?.pending === pending) {
+      projectFileCatalogCache.set(key, { expiresAt: Date.now() + PROJECT_FILE_CACHE_TTL_MS, value });
+    }
+    return value;
+  } catch (error) {
+    projectFileCatalogCache.delete(key);
+    throw error;
+  }
+}
+
+export function invalidateProjectFileCatalog(projectPath?: string): void {
+  projectFileCatalogGeneration += 1;
+  projectFileCatalogCache.clear();
+}
+
 /**
  * Find all scene files in a Godot project
  */
 export async function findSceneFiles(projectPath: string): Promise<string[]> {
-  const scenes: string[] = [];
-
-  async function scanDir(dir: string): Promise<void> {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      
-      // Skip hidden directories and addons
-      if (entry.name.startsWith(".") || entry.name === "addons") {
-        continue;
-      }
-
-      if (entry.isDirectory()) {
-        await scanDir(fullPath);
-      } else if (entry.name.endsWith(".tscn") || entry.name.endsWith(".scn")) {
-        // Convert to res:// path
-        const relativePath = path.relative(projectPath, fullPath).replace(/\\/g, "/");
-        scenes.push(`res://${relativePath}`);
-      }
-    }
-  }
-
-  try {
-    await scanDir(projectPath);
-  } catch {
-    // Ignore errors during scanning
-  }
-
-  return scenes;
+  return [...(await getProjectFileCatalog(projectPath)).scenes];
 }
 
 /**
  * Find all script files in a Godot project
  */
 export async function findScriptFiles(projectPath: string): Promise<string[]> {
-  const scripts: string[] = [];
-
-  async function scanDir(dir: string): Promise<void> {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      
-      if (entry.name.startsWith(".") || entry.name === "addons") {
-        continue;
-      }
-
-      if (entry.isDirectory()) {
-        await scanDir(fullPath);
-      } else if (entry.name.endsWith(".gd")) {
-        const relativePath = path.relative(projectPath, fullPath).replace(/\\/g, "/");
-        scripts.push(`res://${relativePath}`);
-      }
-    }
-  }
-
-  try {
-    await scanDir(projectPath);
-  } catch {
-    // Ignore errors
-  }
-
-  return scripts;
+  return [...(await getProjectFileCatalog(projectPath)).scripts];
 }

@@ -47,6 +47,8 @@ func _execute_operation(operation: String, params: Dictionary) -> Dictionary:
 			return _remove_node(params)
 		"modify_node":
 			return _modify_node(params)
+		"apply_scene_changes":
+			return _apply_scene_changes(params)
 		"read_scene":
 			return _read_scene(params)
 		"list_nodes":
@@ -313,6 +315,190 @@ func _modify_node(params: Dictionary) -> Dictionary:
 		"message": "Modified properties on " + node_path,
 		"modified_properties": modified_props
 	}
+
+
+func _apply_scene_changes(params: Dictionary) -> Dictionary:
+	var scene_path = String(params.get("scene_path", ""))
+	var changes = params.get("changes", [])
+	if scene_path.is_empty():
+		return {"success": false, "error": "scene_path is required"}
+	if typeof(changes) != TYPE_ARRAY or changes.is_empty() or changes.size() > 100:
+		return {"success": false, "error": "changes must contain between 1 and 100 operations"}
+
+	var packed_scene = load(scene_path) as PackedScene
+	if packed_scene == null:
+		return {"success": false, "error": "Failed to load scene: " + scene_path}
+	var scene_root = packed_scene.instantiate()
+	if scene_root == null:
+		return {"success": false, "error": "Failed to instantiate scene: " + scene_path}
+
+	var results = []
+	for index in range(changes.size()):
+		var change = changes[index]
+		if typeof(change) != TYPE_DICTIONARY:
+			scene_root.queue_free()
+			return {
+				"success": false,
+				"error": "Change " + str(index) + " must be an object",
+				"failed_change_index": index,
+				"processed_count": index,
+				"rolled_back": true,
+			}
+		var change_result = _apply_scene_change(scene_root, change)
+		if not change_result.get("success", false):
+			scene_root.queue_free()
+			var operation = String(change.get("operation", "unknown"))
+			return {
+				"success": false,
+				"error": "Change " + str(index) + " (" + operation + ") failed: " + String(change_result.get("error", "Unknown error")),
+				"scene_path": scene_path,
+				"failed_change_index": index,
+				"failed_operation": operation,
+				"processed_count": index,
+				"rolled_back": true,
+			}
+		change_result.erase("success")
+		change_result["index"] = index
+		results.append(change_result)
+
+	var new_packed_scene = PackedScene.new()
+	var pack_result = new_packed_scene.pack(scene_root)
+	if pack_result != OK:
+		scene_root.queue_free()
+		return {"success": false, "error": "Failed to pack scene: " + str(pack_result), "rolled_back": true}
+	var save_result = _save_scene_transactionally(new_packed_scene, scene_path)
+	scene_root.queue_free()
+	if not save_result.get("success", false):
+		return save_result
+
+	return {
+		"success": true,
+		"message": "Applied " + str(changes.size()) + " changes to " + scene_path,
+		"scene_path": scene_path,
+		"applied_count": changes.size(),
+		"results": results,
+	}
+
+
+func _save_scene_transactionally(packed_scene: PackedScene, scene_path: String) -> Dictionary:
+	var extension = scene_path.get_extension()
+	var file_stem = scene_path.get_file().trim_suffix("." + extension)
+	var token = str(OS.get_process_id()) + "-" + str(Time.get_ticks_usec())
+	var temporary_path = scene_path.get_base_dir().path_join("." + file_stem + ".godot-mcp-" + token + "." + extension)
+	var save_error = ResourceSaver.save(packed_scene, temporary_path)
+	if save_error != OK:
+		return {"success": false, "error": "Failed to save temporary scene: " + str(save_error), "rolled_back": true}
+
+	var original_absolute = ProjectSettings.globalize_path(scene_path)
+	var temporary_absolute = ProjectSettings.globalize_path(temporary_path)
+	var commit_error = DirAccess.rename_absolute(temporary_absolute, original_absolute)
+	if commit_error != OK:
+		DirAccess.remove_absolute(temporary_absolute)
+		return {
+			"success": false,
+			"error": "Failed to atomically replace scene: " + str(commit_error),
+			"rolled_back": true,
+		}
+
+	return {"success": true}
+
+
+func _apply_scene_change(scene_root: Node, change: Dictionary) -> Dictionary:
+	var operation = String(change.get("operation", ""))
+	match operation:
+		"add_node":
+			return _apply_add_node_change(scene_root, change)
+		"modify_node":
+			return _apply_modify_node_change(scene_root, change)
+		"remove_node":
+			return _apply_remove_node_change(scene_root, change)
+		_:
+			return {"success": false, "error": "Unsupported operation: " + operation}
+
+
+func _apply_add_node_change(scene_root: Node, change: Dictionary) -> Dictionary:
+	var parent_path = String(change.get("parent_path", "."))
+	var node_name = String(change.get("node_name", ""))
+	var node_type = String(change.get("node_type", ""))
+	var instance_scene_path = String(change.get("instance_scene_path", ""))
+	var properties = change.get("properties", {})
+	if node_name.is_empty() or node_name in [".", ".."] or node_name.contains("/") or node_name.contains(":"):
+		return {"success": false, "error": "Invalid node_name: " + node_name}
+	if node_type.is_empty() == instance_scene_path.is_empty():
+		return {"success": false, "error": "Exactly one of node_type or instance_scene_path is required"}
+	if typeof(properties) != TYPE_DICTIONARY:
+		return {"success": false, "error": "properties must be an object"}
+
+	var parent_node = scene_root if parent_path == "." else scene_root.get_node_or_null(parent_path)
+	if parent_node == null:
+		return {"success": false, "error": "Parent node not found: " + parent_path}
+	if parent_node.has_node(NodePath(node_name)):
+		return {"success": false, "error": "A child named '" + node_name + "' already exists under " + parent_path}
+
+	var new_node: Node = null
+	if not instance_scene_path.is_empty():
+		var child_scene = load(instance_scene_path) as PackedScene
+		if child_scene == null:
+			return {"success": false, "error": "Failed to load child scene: " + instance_scene_path}
+		new_node = child_scene.instantiate()
+	else:
+		new_node = _create_node_of_type(node_type)
+	if new_node == null:
+		return {"success": false, "error": "Failed to create node"}
+
+	new_node.name = node_name
+	for prop_name in properties:
+		if not _has_property(new_node, prop_name):
+			new_node.free()
+			return {"success": false, "error": "Property not found on new node: " + String(prop_name)}
+		new_node.set(prop_name, _convert_property_value(properties[prop_name]))
+	parent_node.add_child(new_node)
+	new_node.owner = scene_root
+	return {
+		"success": true,
+		"operation": "add_node",
+		"node_path": String(scene_root.get_path_to(new_node)),
+		"node_type": new_node.get_class(),
+	}
+
+
+func _apply_modify_node_change(scene_root: Node, change: Dictionary) -> Dictionary:
+	var node_path = String(change.get("node_path", ""))
+	var properties = change.get("properties", {})
+	if node_path.is_empty():
+		return {"success": false, "error": "node_path is required"}
+	if typeof(properties) != TYPE_DICTIONARY or properties.is_empty():
+		return {"success": false, "error": "properties must be a non-empty object"}
+	var node = scene_root if node_path == "." else scene_root.get_node_or_null(node_path)
+	if node == null:
+		return {"success": false, "error": "Node not found: " + node_path}
+	var modified_properties = []
+	for prop_name in properties:
+		if not _has_property(node, prop_name):
+			return {"success": false, "error": "Property not found on node: " + String(prop_name)}
+		node.set(prop_name, _convert_property_value(properties[prop_name]))
+		modified_properties.append(prop_name)
+	return {
+		"success": true,
+		"operation": "modify_node",
+		"node_path": String(scene_root.get_path_to(node)) if node != scene_root else ".",
+		"modified_properties": modified_properties,
+	}
+
+
+func _apply_remove_node_change(scene_root: Node, change: Dictionary) -> Dictionary:
+	var node_path = String(change.get("node_path", ""))
+	if node_path.is_empty():
+		return {"success": false, "error": "node_path is required"}
+	if node_path == ".":
+		return {"success": false, "error": "Cannot remove root node"}
+	var node = scene_root.get_node_or_null(node_path)
+	if node == null:
+		return {"success": false, "error": "Node not found: " + node_path}
+	var canonical_path = String(scene_root.get_path_to(node))
+	node.get_parent().remove_child(node)
+	node.free()
+	return {"success": true, "operation": "remove_node", "node_path": canonical_path}
 
 
 func _read_scene(params: Dictionary) -> Dictionary:

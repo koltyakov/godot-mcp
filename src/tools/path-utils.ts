@@ -120,14 +120,40 @@ export async function resolveWritableProjectFilePath(
   const fsPath = path.resolve(projectPath, normalizedResourcePath.slice("res://".length));
   const parentPath = path.dirname(fsPath);
 
+  // Validate the nearest existing ancestor before creating directories so a
+  // parent symlink cannot redirect mkdir outside the project.
+  let existingAncestor = parentPath;
+  while (true) {
+    const ancestorStats = await fs.lstat(existingAncestor).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    });
+    if (ancestorStats) {
+      break;
+    }
+    const nextAncestor = path.dirname(existingAncestor);
+    if (nextAncestor === existingAncestor) {
+      throw new Error(`${options.fieldName ?? "resource path"} has no writable project ancestor: ${resourcePath}`);
+    }
+    existingAncestor = nextAncestor;
+  }
+
+  const realAncestorPath = await fs.realpath(existingAncestor);
+  if (!isPathInside(projectPath, realAncestorPath)) {
+    throw new Error(`${options.fieldName ?? "resource path"} escapes project directory: ${resourcePath}`);
+  }
+
   await fs.mkdir(parentPath, { recursive: true });
 
   const realParentPath = await fs.realpath(parentPath);
   if (!isPathInside(projectPath, realParentPath)) {
     throw new Error(`${options.fieldName ?? "resource path"} escapes project directory: ${resourcePath}`);
   }
+  const safeFsPath = path.join(realParentPath, path.basename(fsPath));
 
-  const existingStats = await fs.lstat(fsPath).catch((error: NodeJS.ErrnoException) => {
+  const existingStats = await fs.lstat(safeFsPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") {
       return null;
     }
@@ -143,5 +169,5 @@ export async function resolveWritableProjectFilePath(
     throw new Error(`${options.fieldName ?? "resource path"} is not a file: ${resourcePath}`);
   }
 
-  return { fsPath, resourcePath: normalizedResourcePath };
+  return { fsPath: safeFsPath, resourcePath: normalizedResourcePath };
 }

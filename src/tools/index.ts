@@ -1,6 +1,7 @@
 import type { ToolDefinition, ToolHandler } from "./types.js";
 import type { GodotExecutor } from "../godot/executor.js";
 import { notifyResourcesChanged } from "../notifications.js";
+import { invalidateProjectFileCatalog } from "../godot/finder.js";
 
 import { sceneTools } from "./scene-tools.js";
 import { sceneExtTools } from "./scene-ext-tools.js";
@@ -63,6 +64,7 @@ export async function executeTool(
   const result = await tool.execute(args, executor);
 
   if (toolMutatesProject(tool)) {
+    invalidateProjectFileCatalog();
     await notifyResourcesChanged();
   }
 

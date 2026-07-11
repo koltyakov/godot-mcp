@@ -117,26 +117,13 @@ run/main_scene="res://scenes/main.tscn"
   });
 });
 
-test("listScenesTool lists scenes through Godot", async (t) => {
+test("listScenesTool lists scenes without spawning Godot", async (t) => {
   const projectPath = await createGodotProject(t);
   await writeText(path.join(projectPath, "scenes", "main.tscn"));
   const realProjectPath = await fs.realpath(projectPath);
 
-  const executor = createMockGodotExecutor(async (receivedProjectPath, operation, params) => {
-    assert.equal(receivedProjectPath, realProjectPath);
-    assert.equal(operation, "list_scenes");
-    assert.deepEqual(params, {});
-
-    return {
-      success: true,
-      output: "",
-      data: {
-        success: true,
-        project_path: realProjectPath,
-        scenes: ["res://scenes/main.tscn"],
-        count: 1,
-      },
-    };
+  const executor = createMockGodotExecutor(async () => {
+    throw new Error("Godot should not be spawned for scene inventory");
   });
 
   const result = await listScenesTool.execute({ project_path: projectPath }, executor);

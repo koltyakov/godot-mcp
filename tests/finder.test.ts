@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   findSceneFiles,
   findScriptFiles,
+  invalidateProjectFileCatalog,
   isGodotProject,
   parseGodotProjectPathFromCommandLine,
   resolveOpenGodotProjectsFromProcesses,
@@ -54,6 +55,23 @@ test("file search helpers return an empty list when scanning fails", async (t) =
 
   assert.deepEqual(await findSceneFiles(missingPath), []);
   assert.deepEqual(await findScriptFiles(missingPath), []);
+});
+
+test("project file catalog is shared and can be invalidated after mutations", async (t) => {
+  const projectPath = await createGodotProject(t);
+  await writeText(path.join(projectPath, "scenes", "main.tscn"));
+
+  const [scenes, scripts] = await Promise.all([
+    findSceneFiles(projectPath),
+    findScriptFiles(projectPath),
+  ]);
+  assert.deepEqual(scenes, ["res://scenes/main.tscn"]);
+  assert.deepEqual(scripts, []);
+
+  await writeText(path.join(projectPath, "scripts", "player.gd"));
+  assert.deepEqual(await findScriptFiles(projectPath), []);
+  invalidateProjectFileCatalog(projectPath);
+  assert.deepEqual(await findScriptFiles(projectPath), ["res://scripts/player.gd"]);
 });
 
 test("parseGodotProjectPathFromCommandLine handles Godot path arguments", () => {

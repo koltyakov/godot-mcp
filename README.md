@@ -16,6 +16,7 @@ The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are 
 - **add_node** - Add nodes to existing scenes (supports instancing child scenes via `instance_scene_path`)
 - **remove_node** - Remove nodes from scenes
 - **modify_node** - Modify node properties
+- **apply_scene_changes** - Apply ordered add/modify/remove operations transactionally with one scene load and save
 - **read_scene** - Read scene structure as JSON (includes groups, metadata, signal connections, and stored properties)
 - **list_nodes** - List all nodes in a scene
 - **add_node_group** / **remove_node_group** - Manage persistent node groups
@@ -68,7 +69,9 @@ The server advertises `tools`, `resources`, `prompts`, and `logging`. Tools are 
 
 Project-targeted tools accept `project_path`, but it is optional when Godot has an opened project. If exactly one open project is detected, the server uses it by default. If multiple projects are open, provide `project_name` or `project_path`; ambiguous requests report the available open projects so the client can ask which one to use.
 
-Most project content operations are executed by headless Godot through the bundled `godot_operations.gd` script, so scene/resource/script reads and writes use Godot's resource APIs instead of direct filesystem parsing where practical.
+Engine-dependent operations are executed by headless Godot through the bundled `godot_operations.gd` script. Script reads/edits and scene/script inventories use containment-checked filesystem fast paths, avoiding a Godot startup for operations that do not require engine semantics.
+
+For multi-step scene authoring, prefer `apply_scene_changes` over repeated `add_node`, `modify_node`, and `remove_node` calls. Changes are evaluated in order against one in-memory scene, packed once, and saved only when every change succeeds. Scene mutations are serialized per project and scene to prevent concurrent MCP calls from overwriting each other.
 
 ### MCP capabilities
 

@@ -43,6 +43,7 @@ test("destructive tools are annotated destructiveHint=true", () => {
     "add_node",
     "remove_node",
     "modify_node",
+    "apply_scene_changes",
     "create_script",
     "edit_script",
     "attach_script",

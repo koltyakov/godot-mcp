@@ -2,6 +2,77 @@ import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import { normalizeResourcePath, SCENE_EXTENSIONS } from "./path-utils.js";
+import { executeGodotOperation } from "./godot-operation.js";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateNodeSource(nodeType: unknown, instanceScenePath: unknown, allowNodeTypeFallback = false): void {
+  const hasNodeType = typeof nodeType === "string" && nodeType.length > 0;
+  const hasInstance = typeof instanceScenePath === "string" && instanceScenePath.length > 0;
+  if ((!hasNodeType && !hasInstance) || (hasNodeType && hasInstance && !allowNodeTypeFallback)) {
+    throw new Error("Exactly one of node_type or instance_scene_path is required");
+  }
+}
+
+function normalizeSceneChanges(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) {
+    throw new Error("changes must contain between 1 and 100 operations");
+  }
+
+  return value.map((change, index) => {
+    if (!isRecord(change)) {
+      throw new Error(`changes[${index}] must be an object`);
+    }
+    const operation = change.operation;
+    if (operation === "add_node") {
+      if (typeof change.node_name !== "string" || !change.node_name) {
+        throw new Error(`changes[${index}].node_name is required for add_node`);
+      }
+      validateNodeSource(change.node_type, change.instance_scene_path);
+      if (change.properties !== undefined && !isRecord(change.properties)) {
+        throw new Error(`changes[${index}].properties must be an object`);
+      }
+      const instanceScenePath = typeof change.instance_scene_path === "string"
+        ? normalizeResourcePath(change.instance_scene_path, {
+          fieldName: `changes[${index}].instance_scene_path`,
+          extensions: SCENE_EXTENSIONS,
+        })
+        : undefined;
+      return {
+        operation,
+        parent_path: typeof change.parent_path === "string" && change.parent_path ? change.parent_path : ".",
+        node_name: change.node_name,
+        ...(typeof change.node_type === "string" ? { node_type: change.node_type } : {}),
+        ...(instanceScenePath ? { instance_scene_path: instanceScenePath } : {}),
+        properties: change.properties ?? {},
+      };
+    }
+
+    if (operation === "modify_node") {
+      if (typeof change.node_path !== "string" || !change.node_path) {
+        throw new Error(`changes[${index}].node_path is required for modify_node`);
+      }
+      if (!isRecord(change.properties) || Object.keys(change.properties).length === 0) {
+        throw new Error(`changes[${index}].properties must be a non-empty object for modify_node`);
+      }
+      return { operation, node_path: change.node_path, properties: change.properties };
+    }
+
+    if (operation === "remove_node") {
+      if (typeof change.node_path !== "string" || !change.node_path) {
+        throw new Error(`changes[${index}].node_path is required for remove_node`);
+      }
+      if (change.node_path === ".") {
+        throw new Error(`changes[${index}] cannot remove the scene root`);
+      }
+      return { operation, node_path: change.node_path };
+    }
+
+    throw new Error(`changes[${index}].operation must be add_node, modify_node, or remove_node`);
+  });
+}
 
 // Create Scene Tool
 export const createSceneTool: ToolHandler = {
@@ -94,7 +165,7 @@ export const addNodeTool: ToolHandler = {
           additionalProperties: true,
         },
       },
-      required: ["scene_path", "node_type", "node_name"],
+      required: ["scene_path", "node_name"],
     },
     annotations: destructiveAnnotations,
   },
@@ -118,6 +189,7 @@ export const addNodeTool: ToolHandler = {
         extensions: SCENE_EXTENSIONS,
       })
       : undefined;
+    validateNodeSource(nodeType, instanceScenePath, true);
 
     const result = await executor.execute(projectPath, "add_node", {
       scene_path: scenePath,
@@ -133,6 +205,62 @@ export const addNodeTool: ToolHandler = {
     }
 
     return result.output;
+  },
+};
+
+// Apply Scene Changes Tool
+export const applySceneChangesTool: ToolHandler = {
+  definition: {
+    name: "apply_scene_changes",
+    description:
+      "Apply an ordered transaction of node additions, property changes, and removals to one scene. The scene is loaded once and saved once; if any change fails, none are saved.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...projectSelectorProperties,
+        scene_path: {
+          type: "string",
+          description: "Path to the existing scene file.",
+        },
+        changes: {
+          type: "array",
+          description:
+            "Ordered changes. add_node requires node_name and exactly one of node_type or instance_scene_path; modify_node requires node_path and properties; remove_node requires node_path.",
+          items: {
+            type: "object",
+            properties: {
+              operation: { type: "string", enum: ["add_node", "modify_node", "remove_node"] },
+              parent_path: { type: "string" },
+              node_path: { type: "string" },
+              node_type: { type: "string" },
+              node_name: { type: "string" },
+              instance_scene_path: { type: "string" },
+              properties: { type: "object", additionalProperties: true },
+            },
+            required: ["operation"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["scene_path", "changes"],
+    },
+    annotations: destructiveAnnotations,
+  },
+  async execute(args, executor) {
+    const projectPath = await resolveProjectPath(args);
+    const scenePath = normalizeResourcePath(args.scene_path as string, {
+      fieldName: "scene_path",
+      extensions: SCENE_EXTENSIONS,
+    });
+    const changes = normalizeSceneChanges(args.changes);
+
+    return executeGodotOperation(
+      executor,
+      projectPath,
+      "apply_scene_changes",
+      { scene_path: scenePath, changes },
+      "Failed to apply scene changes"
+    );
   },
 };
 
@@ -324,6 +452,7 @@ export const sceneTools = [
   addNodeTool,
   removeNodeTool,
   modifyNodeTool,
+  applySceneChangesTool,
   readSceneTool,
   listNodesTool,
 ];

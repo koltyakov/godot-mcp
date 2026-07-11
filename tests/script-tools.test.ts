@@ -1,52 +1,16 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
 import { editScriptTool, readScriptTool } from "../src/tools/script-tools.js";
-import { createGodotProject, createMockGodotExecutor } from "./helpers.js";
+import { createGodotProject, createMockGodotExecutor, createTempDir } from "./helpers.js";
 
-test("editScriptTool and readScriptTool process scripts through Godot", async (t) => {
+test("editScriptTool and readScriptTool use the filesystem without spawning Godot", async (t) => {
   const projectPath = await createGodotProject(t);
   const content = "extends Node\n\nfunc _ready():\n\tpass\n";
-  const scripts = new Map<string, string>();
-  const executor = createMockGodotExecutor(async (_projectPath, operation, params) => {
-    if (operation === "edit_script") {
-      assert.deepEqual(params, {
-        script_path: "res://scripts/player.gd",
-        content,
-      });
-      scripts.set(params.script_path as string, params.content as string);
-
-      return {
-        success: true,
-        output: "",
-        data: {
-          success: true,
-          message: "Updated script at res://scripts/player.gd",
-          script_path: "res://scripts/player.gd",
-        },
-      };
-    }
-
-    if (operation === "read_script") {
-      assert.deepEqual(params, {
-        script_path: "res://scripts/player.gd",
-      });
-      const storedContent = scripts.get(params.script_path as string) ?? "";
-
-      return {
-        success: true,
-        output: "",
-        data: {
-          success: true,
-          script_path: "res://scripts/player.gd",
-          content: storedContent,
-          line_count: storedContent.split("\n").length,
-        },
-      };
-    }
-
-    return { success: false, output: "", error: `Unexpected operation: ${operation}` };
+  const executor = createMockGodotExecutor(async () => {
+    throw new Error("Godot should not be spawned for script filesystem operations");
   });
 
   const editResult = await editScriptTool.execute(
@@ -109,14 +73,6 @@ test("script tools reject absolute paths and project traversal", async (t) => {
 
 test("readScriptTool reports missing files as read failures", async (t) => {
   const projectPath = await createGodotProject(t);
-  const executor = createMockGodotExecutor(async (_projectPath, operation) => {
-    assert.equal(operation, "read_script");
-    return {
-      success: false,
-      output: "",
-      error: "Failed to read script: res://scripts/missing.gd",
-    };
-  });
 
   await assert.rejects(
     readScriptTool.execute(
@@ -124,8 +80,40 @@ test("readScriptTool reports missing files as read failures", async (t) => {
         project_path: projectPath,
         script_path: "res://scripts/missing.gd",
       },
-      executor
+      null
     ),
     /Failed to read script:/
   );
+});
+
+test("editScriptTool refuses parent symlinks that escape the project", async (t) => {
+  const projectPath = await createGodotProject(t);
+  const outsidePath = await createTempDir(t);
+  await fs.symlink(outsidePath, path.join(projectPath, "linked"));
+
+  await assert.rejects(
+    editScriptTool.execute({
+      project_path: projectPath,
+      script_path: "res://linked/nested/player.gd",
+      content: "extends Node\n",
+    }, null),
+    /escapes project directory/
+  );
+  await assert.rejects(fs.access(path.join(outsidePath, "nested")));
+});
+
+test("editScriptTool preserves existing file permissions", { skip: process.platform === "win32" }, async (t) => {
+  const projectPath = await createGodotProject(t);
+  const scriptPath = path.join(projectPath, "scripts", "tool.gd");
+  await fs.mkdir(path.dirname(scriptPath), { recursive: true });
+  await fs.writeFile(scriptPath, "extends Node\n", { mode: 0o764 });
+  await fs.chmod(scriptPath, 0o764);
+
+  await editScriptTool.execute({
+    project_path: projectPath,
+    script_path: "res://scripts/tool.gd",
+    content: "extends Node2D\n",
+  }, null);
+
+  assert.equal((await fs.stat(scriptPath)).mode & 0o777, 0o764);
 });

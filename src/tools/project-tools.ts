@@ -1,6 +1,6 @@
 import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
-import { findOpenGodotProjects } from "../godot/finder.js";
+import { findOpenGodotProjects, findSceneFiles } from "../godot/finder.js";
 import { parseGodotDiagnostics } from "../godot/diagnostics.js";
 import * as fs from "fs/promises";
 import * as path from "path";
@@ -68,10 +68,10 @@ export const listScenesTool: ToolHandler = {
     },
     annotations: readOnlyAnnotations,
   },
-  async execute(args, executor) {
+  async execute(args, _executor) {
     const projectPath = await resolveProjectPath(args);
-
-    return executeGodotOperation(executor, projectPath, "list_scenes", {}, "Failed to list scenes");
+    const scenes = await findSceneFiles(projectPath);
+    return { success: true, project_path: projectPath, scenes, count: scenes.length };
   },
 };
 

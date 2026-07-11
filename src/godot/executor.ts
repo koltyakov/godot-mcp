@@ -1,5 +1,6 @@
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
+import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
@@ -9,6 +10,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_LENGTH = 1024 * 1024;
+const SCENE_MUTATION_OPERATIONS = new Set([
+  "create_scene",
+  "add_node",
+  "remove_node",
+  "modify_node",
+  "apply_scene_changes",
+  "attach_script",
+  "create_animation",
+  "add_animation_track",
+  "set_node_group",
+  "set_node_meta",
+  "remove_node_meta",
+  "connect_signal",
+  "disconnect_signal",
+]);
 
 export interface ExecutionResult {
   success: boolean;
@@ -75,9 +91,30 @@ function isResultPayload(value: unknown): value is OperationResultPayload {
     (result.error === undefined || typeof result.error === "string");
 }
 
+async function canonicalizeProspectivePath(filePath: string): Promise<string> {
+  let existingAncestor = filePath;
+  while (true) {
+    try {
+      const realAncestor = await fs.realpath(existingAncestor);
+      return path.resolve(realAncestor, path.relative(existingAncestor, filePath));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return filePath;
+      }
+      const parent = path.dirname(existingAncestor);
+      if (parent === existingAncestor) {
+        return filePath;
+      }
+      existingAncestor = parent;
+    }
+  }
+}
+
 export class GodotExecutor {
   private godotPath: string;
   private operationsScriptPath: string;
+  private sceneMutationTails = new Map<string, Promise<void>>();
+  private sceneKeyResolutionTail: Promise<void> = Promise.resolve();
 
   constructor(godotPath: string) {
     this.godotPath = godotPath;
@@ -92,6 +129,43 @@ export class GodotExecutor {
     projectPath: string,
     operation: string,
     params: Record<string, unknown> = {},
+    timeoutMs?: number
+  ): Promise<ExecutionResult> {
+    const scenePath = params.scene_path;
+    if (SCENE_MUTATION_OPERATIONS.has(operation) && typeof scenePath === "string") {
+      const previousResolution = this.sceneKeyResolutionTail;
+      let releaseResolution!: () => void;
+      this.sceneKeyResolutionTail = new Promise<void>((resolve) => {
+        releaseResolution = resolve;
+      });
+      await previousResolution;
+
+      let pendingOperation: Promise<ExecutionResult>;
+      try {
+        const relativeScenePath = scenePath.startsWith("res://") ? scenePath.slice(6) : scenePath;
+        const lexicalScenePath = path.resolve(projectPath, relativeScenePath);
+        const canonicalScenePath = await canonicalizeProspectivePath(lexicalScenePath);
+        const fileStats = await fs.stat(canonicalScenePath).catch(() => null);
+        const lockKey = fileStats
+          ? `${fileStats.dev}:${fileStats.ino}`
+          : canonicalScenePath;
+        pendingOperation = this.withSceneMutationLock(
+          lockKey,
+          () => this.executeOperation(projectPath, operation, params, timeoutMs)
+        );
+      } finally {
+        releaseResolution();
+      }
+      return pendingOperation!;
+    }
+
+    return this.executeOperation(projectPath, operation, params, timeoutMs);
+  }
+
+  private async executeOperation(
+    projectPath: string,
+    operation: string,
+    params: Record<string, unknown>,
     timeoutMs?: number
   ): Promise<ExecutionResult> {
     const resultToken = randomUUID();
@@ -215,6 +289,26 @@ export class GodotExecutor {
       output: processResult.stdout.trim(),
       error: stderr ? `${markerError}: ${stderr}` : markerError,
     };
+  }
+
+  private async withSceneMutationLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sceneMutationTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    this.sceneMutationTails.set(key, tail);
+
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.sceneMutationTails.get(key) === tail) {
+        this.sceneMutationTails.delete(key);
+      }
+    }
   }
 
   /**

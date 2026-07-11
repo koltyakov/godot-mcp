@@ -64,12 +64,12 @@ const prompts: PromptDefinition[] = [
               `2. Add a Sprite2D child named "Sprite2D" (leave texture empty for now).`,
               `3. Add a CollisionShape2D child named "CollisionShape2D" with a CapsuleShape2D resource sized appropriately for a 2D character.`,
               `4. Create a GDScript at ${scriptPath} extending CharacterBody2D with:`,
-              `   - SPEED = 300.0, JUMP_VELOCITY = -400.0 exported constants`,
+              `   - SPEED = 300.0 and JUMP_VELOCITY = -400.0 constants`,
               `   - gravity taken from ProjectSettings via get_gravity()`,
               `   - _physics_process that applies gravity, handles ui_accept jump when on floor, and ui_left/ui_right horizontal movement via move_and_slide()`,
               `5. Attach the script to the Player root node.`,
               ``,
-              `Use the godot-mcp create_scene, add_node, create_script and attach_script tools. After creating nodes, report the resulting node paths.`,
+              `Use create_scene, then add both children in one apply_scene_changes transaction. Use create_resource, create_script, and attach_script for the remaining assets. Report the transaction's resulting node paths.`,
             ].join("\n")
           ),
         ],
@@ -100,7 +100,7 @@ const prompts: PromptDefinition[] = [
               `5. Create a GDScript at ${scriptPath} extending CharacterBody3D implementing WASD/arrows movement (SPEED = 5.0), gravity, and space-to-jump (JUMP_VELOCITY = 4.5) using move_and_slide().`,
               `6. Attach the script to the Player root.`,
               ``,
-              `Use the godot-mcp create_scene, add_node, create_script and attach_script tools.`,
+              `Use create_scene, then add the Mesh, Collision, and Camera in one apply_scene_changes transaction. Use create_resource, create_script, and attach_script for the remaining assets.`,
             ].join("\n")
           ),
         ],

@@ -1,12 +1,42 @@
 import type { ToolHandler } from "./types.js";
 import { destructiveAnnotations, readOnlyAnnotations } from "./types.js";
-import { executeGodotOperation } from "./godot-operation.js";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { randomUUID } from "node:crypto";
+import { findScriptFiles } from "../godot/finder.js";
 import { projectSelectorProperties, resolveProjectPath } from "./project-context.js";
 import {
   normalizeResourcePath,
+  resolveExistingProjectFilePath,
+  resolveWritableProjectFilePath,
   SCENE_EXTENSIONS,
   SCRIPT_EXTENSIONS,
 } from "./path-utils.js";
+
+async function replaceFileAtomically(filePath: string, content: string): Promise<void> {
+  const stats = await fs.stat(filePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  });
+  const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${randomUUID()}.tmp`);
+  try {
+    const file = await fs.open(temporaryPath, "wx", stats?.mode ?? 0o666);
+    try {
+      await file.writeFile(content, "utf-8");
+      if (stats) {
+        await file.chmod(stats.mode & 0o7777);
+      }
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await fs.rename(temporaryPath, filePath);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
 
 // Create Script Tool
 export const createScriptTool: ToolHandler = {
@@ -151,20 +181,28 @@ export const readScriptTool: ToolHandler = {
     },
     annotations: readOnlyAnnotations,
   },
-  async execute(args, executor) {
+  async execute(args, _executor) {
     const projectPath = await resolveProjectPath(args);
     const scriptPath = normalizeResourcePath(args.script_path as string, {
       fieldName: "script_path",
       extensions: SCRIPT_EXTENSIONS,
     });
 
-    return executeGodotOperation(
-      executor,
-      projectPath,
-      "read_script",
-      { script_path: scriptPath },
-      "Failed to read script"
-    );
+    const resolved = await resolveExistingProjectFilePath(projectPath, scriptPath, {
+      fieldName: "script_path",
+      extensions: SCRIPT_EXTENSIONS,
+    }).catch((error) => {
+      throw new Error(`Failed to read script: ${scriptPath} (${error instanceof Error ? error.message : String(error)})`);
+    });
+    const content = await fs.readFile(resolved.fsPath, "utf-8").catch((error) => {
+      throw new Error(`Failed to read script: ${scriptPath} (${error instanceof Error ? error.message : String(error)})`);
+    });
+    return {
+      success: true,
+      script_path: resolved.resourcePath,
+      content,
+      line_count: content.split("\n").length,
+    };
   },
 };
 
@@ -190,7 +228,7 @@ export const editScriptTool: ToolHandler = {
     },
     annotations: destructiveAnnotations,
   },
-  async execute(args, executor) {
+  async execute(args, _executor) {
     const content = args.content as string;
 
     const projectPath = await resolveProjectPath(args);
@@ -199,13 +237,20 @@ export const editScriptTool: ToolHandler = {
       extensions: SCRIPT_EXTENSIONS,
     });
 
-    return executeGodotOperation(
-      executor,
-      projectPath,
-      "edit_script",
-      { script_path: scriptPath, content },
-      "Failed to edit script"
-    );
+    const resolved = await resolveWritableProjectFilePath(projectPath, scriptPath, {
+      fieldName: "script_path",
+      extensions: SCRIPT_EXTENSIONS,
+    }).catch((error) => {
+      throw new Error(`Failed to edit script: ${scriptPath} (${error instanceof Error ? error.message : String(error)})`);
+    });
+    await replaceFileAtomically(resolved.fsPath, content).catch((error) => {
+      throw new Error(`Failed to edit script: ${scriptPath} (${error instanceof Error ? error.message : String(error)})`);
+    });
+    return {
+      success: true,
+      message: `Updated script at ${resolved.resourcePath}`,
+      script_path: resolved.resourcePath,
+    };
   },
 };
 
@@ -223,10 +268,10 @@ export const listScriptsTool: ToolHandler = {
     },
     annotations: readOnlyAnnotations,
   },
-  async execute(args, executor) {
+  async execute(args, _executor) {
     const projectPath = await resolveProjectPath(args);
-
-    return executeGodotOperation(executor, projectPath, "list_scripts", {}, "Failed to list scripts");
+    const scripts = await findScriptFiles(projectPath);
+    return { success: true, project_path: projectPath, scripts, count: scripts.length };
   },
 };
 
